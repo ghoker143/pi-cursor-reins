@@ -1,0 +1,63 @@
+{
+  "name": "pi-cursor-reins",
+  "version": "0.1.0",
+  "description": "Cursor provider for pi: fully Pi-owned tool execution (no Cursor-side exec, audited) using your Cursor subscription quota. AgentService channel by default, optional RunInference.",
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "contentPolicy": {
+    "class": "dual-use"
+  },
+  "author": "ghoker143 <ghoker51@protonmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ghoker143/pi-cursor-reins.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ghoker143/pi-cursor-reins/issues"
+  },
+  "homepage": "https://github.com/ghoker143/pi-cursor-reins#readme",
+  "keywords": [
+    "pi",
+    "pi-package",
+    "pi-extension",
+    "cursor",
+    "provider",
+    "agent",
+    "mcp"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "DISCLOSURE",
+    "CHANGELOG.md",
+    "package.json"
+  ],
+  "scripts": {
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "audit": "node --experimental-strip-types tools/audit/audit.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.87.0 <0.88.0",
+    "@earendil-works/pi-coding-agent": ">=0.87.0 <0.88.0"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.14.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@types/node": "24.5.2",
+    "typescript": "5.9.2"
+  }
+}

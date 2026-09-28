@@ -1,0 +1,4 @@
+node_modules/
+.cursor-provider-debug.log
+*.tsbuildinfo
+.pi/

@@ -1,0 +1,52 @@
+Dual-use disclosure for pi-cursor-reins
+========================================
+
+pi-cursor-reins is a provider plugin for the pi coding agent
+(npm: @earendil-works/pi-coding-agent). It lets pi use models from the
+user's own Cursor subscription. The following security-relevant
+capabilities are inherent to that purpose. All of them are documented,
+tested, and statically auditable in this repository (docs/SPEC.md,
+docs/PROTOCOL.md, docs/PROTOCOL-AGENT.md, and `npm run audit`).
+
+1. Host identity collection (src/identity)
+
+   Cursor's API requires a stable client machine identifier. The
+   provider reads platform machine ids (Linux /var/lib/dbus/machine-id
+   and /etc/machine-id files; macOS ioreg IOPlatformUUID; Windows
+   MachineGuid registry value; FreeBSD kenv/sysctl host UUID) through a
+   fixed, documented command allowlist with array argv and no
+   user-input concatenation, hashes them (SHA-256), and sends only the
+   hash in request headers on the optional inference channel. The
+   default agent channel sends no machine identity at all (Cursor CLI
+   headers carry no checksum). The raw hardware id never leaves the
+   process. Nothing else is collected. Linux reads the machine-id
+   files directly without spawning a process. No fallback UUID is
+   generated or written to disk.
+
+2. Credential handling (src/auth, src/transport)
+
+   OAuth login runs through pi's own `/login cursor` flow. Access and
+   refresh tokens are stored only in pi's auth.json (pi AuthStorage),
+   refreshed over HTTPS, and placed in request headers. Tokens never
+   enter any subprocess environment (statically enforced by
+   `npm run audit`). Credentials are transmitted only to
+   api2.cursor.sh.
+
+3. Network access (src/transport)
+
+   HTTPS egress is limited to an audited domain allowlist:
+   api2.cursor.sh (OAuth, model catalog, optional inference channel)
+   and agentn.*.api5.cursor.sh (agent inference channel). The protocol
+   definitions are original TypeScript rewritten from observed wire
+   behavior; no Cursor or third-party code is copied.
+
+4. Subprocess spawning (src/identity only)
+
+   Only the identity commands listed in (1) may spawn, with array argv.
+   The audit tool (tools/audit) fails if any other spawn/exec/execSync
+   call site exists in the codebase.
+
+The provider never executes model-requested local tools. All tool
+execution stays inside pi under pi's permission system; Cursor-side
+native tool execution requests are rejected by a completeness-tested
+audit table (see README, "Why this exists", and docs/SPEC.md FR-2).
