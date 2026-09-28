@@ -1,24 +1,28 @@
 # pi-cursor-reins
 
-A [pi](https://github.com/earendil-works/pi-coding-agent) provider for Cursor models.
+A [pi](https://github.com/earendil-works/pi) provider that runs Cursor models on your Cursor
+subscription. Two channels, selected explicitly and never silently switched:
 
-**Every tool call runs inside pi, under pi's permission system — nothing executes on the Cursor
-side — while inference consumes your Cursor subscription quota.** No API keys, no per-token
-billing against provider APIs.
+| channel | RPC | how |
+|---|---|---|
+| **agentic** (default) | `agent.v1.AgentService/Run` | Cursor orchestrates the conversation; all local work is pi's |
+| **inference** | `aiserver.v1.InferenceService/RunInference` | opt-in via `CURSOR_PROVIDER_CHANNEL=inference`; requires the account entitlement |
 
-Default channel: Cursor `agent.v1.AgentService/Run`. Pi owns the session file, the tools, and the
-permission system; Pi tools are projected to Cursor as MCP tools (`provider_identifier=pi`) and
-executed by pi. Cursor-side native tool execution (shell, read, write, fetch, …) is refused by a
-per-case audit table and answered with a redirect to the equivalent Pi tool. Unknown protocol
-frames fail closed. Optional channel: `CURSOR_PROVIDER_CHANNEL=inference` uses
-`aiserver.v1.InferenceService/RunInference` (requires that entitlement on the account). Channels
-never fall back to each other.
+The defining property: **no local operation happens outside pi.** On the agentic channel the
+model and the conversation loop live on Cursor's side, but every Cursor native tool-execution
+request (shell, read, write, fetch, …) is rejected case by case by a completeness-tested audit
+table and answered with a redirect to the equivalent pi tool; pi's own tools are projected to
+the model as MCP tools (`provider_identifier=pi`) and executed under pi's permission system.
+Unknown protocol frames fail closed. Hosted capabilities Cursor offers (web search/fetch) run
+on Cursor's servers and are approved explicitly per query. On the inference channel there is
+no execution surface at all — pure model in, tokens out.
 
 ## Why this exists
 
 Actively maintained Cursor integrations for pi hand tool execution to the Cursor side; the two
 audit-compliant implementations are unmaintained (survey in [docs/SPEC.md](docs/SPEC.md) §1.1).
-This package maintains only the thin inference-protocol layer and keeps execution entirely local:
+This package maintains only the thin protocol layer and keeps local execution entirely inside
+pi:
 
 | Concern | Where it lives |
 |---|---|

@@ -8,7 +8,7 @@ Scope: all code and release artifacts in this repository. Issue/PR acceptance cr
 
 ## 1. Background and goals
 
-Provide a **Cursor provider** for [pi coding agent](https://github.com/earendil-works/pi-coding-agent) ("pi"):
+Provide a **Cursor provider** for [pi coding agent](https://github.com/earendil-works/pi) ("pi"):
 the default channel is Cursor's `agent.v1.AgentService/Run` (auditable: all native exec is refused;
 Pi tools are projected over MCP and executed by pi); the optional `CURSOR_PROVIDER_CHANNEL=inference`
 channel uses `aiserver.v1.InferenceService/RunInference`. Both channels leave sessions, tools,

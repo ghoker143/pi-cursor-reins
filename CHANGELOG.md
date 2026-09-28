@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/).
 
+## 0.1.1 — 2026-09-28
+
+- README: corrected upstream pi repository URL (`earendil-works/pi`).
+- README: reworded the introduction — channels stated up front; the security claim now says
+  precisely "no local operation happens outside pi" instead of overclaiming "nothing executes
+  on the Cursor side" (Cursor hosts the conversation loop and its own web tools).
+
 ## 0.1.0 — 2026-09-28
 
 Initial release.
