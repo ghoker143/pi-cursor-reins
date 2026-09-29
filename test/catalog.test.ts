@@ -86,6 +86,67 @@ test("T-CATALOG: thinking levels become variant parameters, not model ids", () =
   assert.deepEqual(cursorParams?.high, [{ id: "reasoning_effort", value: "high" }]);
 });
 
+test("T-CATALOG: cursor- prefixed families are stripped and the default slug is captured", () => {
+  // Cursor publishes some families with a `cursor-` prefix (cursor-grok-4.6-*)
+  // and their successors without (grok-4.7-*). Row ids normalize to the
+  // unprefixed form; the wire id always comes from the published slugs.
+  const availableModel = (name: string) => ({
+    name,
+    supportsThinking: true,
+    supportsMaxMode: false,
+    supportsNonMaxMode: true,
+    contextTokenLimit: 256000,
+    clientDisplayName: "Grok Y",
+    legacySlugs: [],
+    idAliases: [],
+    variants: [
+      {
+        displayName: "low",
+        isMaxMode: false,
+        isDefaultNonMaxConfig: true,
+        legacySlug: `cursor-${name}-low`,
+        parameterValues: [{ id: "effort", value: "low" }],
+      },
+      {
+        displayName: "high",
+        isMaxMode: false,
+        legacySlug: `cursor-${name}-high`,
+        parameterValues: [{ id: "effort", value: "high" }],
+      },
+    ],
+  });
+  const usable = (id: string) => ({ modelId: id, displayModelId: "", displayName: id, displayNameShort: "", aliases: [] });
+  const rows = mapCatalog(
+    { models: [availableModel("grok-y")] },
+    { models: [usable("cursor-grok-y-low"), usable("cursor-grok-y-high")] },
+    {},
+  );
+  const row = rows.find((r) => r.id === "grok-y");
+  assert.ok(row, "the cursor- prefix is stripped from the row id");
+  assert.equal(row.thinkingLevelMap?.high, "cursor-grok-y-high", "level map keeps the published slug");
+  assert.equal(
+    row.samplingParams?.cursorDefaultModelId,
+    "cursor-grok-y-low",
+    "the backend default variant's slug is captured for level-less requests",
+  );
+
+  // Collision: both `cursor-grok-z` and `grok-z` exist → the prefixed one keeps its prefix.
+  const colliding = mapCatalog(
+    { models: [availableModel("grok-z"), { ...availableModel("grok-z"), name: "grok-z-plain", legacySlugs: ["grok-z-low", "grok-z-high"] }] },
+    {
+      models: [
+        usable("cursor-grok-z-low"),
+        usable("cursor-grok-z-high"),
+        usable("grok-z-low"),
+        usable("grok-z-high"),
+      ],
+    },
+    {},
+  );
+  assert.ok(colliding.some((r) => r.id === "grok-z"), "the plain family keeps its id");
+  assert.ok(colliding.some((r) => r.id === "cursor-grok-z"), "a collision keeps the prefix");
+});
+
 test("T-CATALOG: empty available fails closed", () => {
   assert.throws(
     () =>

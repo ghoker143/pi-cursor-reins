@@ -112,9 +112,34 @@ export function transcriptToIr(
   const cursorParams = (options?.samplingParams?.cursorParams ?? model.samplingParams?.cursorParams) as
     | Record<string, { id: string; value: string }[]>
     | undefined;
-  const effortParams = options?.reasoning === undefined ? undefined : cursorParams?.[options.reasoning];
   const maxMode = options?.samplingParams?.cursorMaxMode ?? model.samplingParams?.cursorMaxMode;
   const contextParam = options?.samplingParams?.cursorContext ?? model.samplingParams?.cursorContext;
+  // requested_model.model_id must be an id Cursor actually publishes: the family
+  // id on the pi row is CONSTRUCTED (familyFor groups effort slugs) and
+  // AgentService rejects many of them (`not_found`: bare `cursor-grok-4.6`, every
+  // `-fast` family id — measured 2026-09-29). thinkingLevelMap values are
+  // GetUsableModels ids verbatim, i.e. always accepted. Pick the slug for the
+  // requested thinking level, else the backend-marked default variant's slug.
+  // Measured 2026-09-29 across grok/gpt/claude: slug alone works for every
+  // family; slug + variant effort params is rejected as not_found (the slug
+  // already encodes the variant). So the slug path sends NO effortParams.
+  const levelMap = model.thinkingLevelMap as Record<string, string | null> | undefined;
+  const defaultSlug =
+    (options?.samplingParams?.cursorDefaultModelId ?? model.samplingParams?.cursorDefaultModelId) as
+      | string
+      | undefined;
+  const mapped = options?.reasoning === undefined ? undefined : levelMap?.[options.reasoning];
+  const slug =
+    (typeof mapped === "string" && mapped !== "" ? mapped : undefined) ??
+    defaultSlug ??
+    (levelMap?.["off"] || undefined) ??
+    Object.values(levelMap ?? {}).find((v): v is string => typeof v === "string" && v !== "");
+  // Fallback (no catalog level data at all): the historical family-id +
+  // effortParams shape. Rows built by mapCatalog always carry a level map, so
+  // this only fires for hand-written custom model entries.
+  const effortParams =
+    slug !== undefined || options?.reasoning === undefined ? undefined : cursorParams?.[options.reasoning];
+  const sendId = slug ?? model.id.replace(/-max$/, "");
   return {
     sessionId: options?.sessionId && options.sessionId !== "" ? options.sessionId : crypto.randomUUID(),
     systemPrompt,
@@ -124,9 +149,9 @@ export function transcriptToIr(
       description: t.description,
       jsonSchema: jsonSchemaOf(t.parameters),
     })),
-    // `model.id` stays the base Cursor id: the per-effort legacy slugs AgentService
-    // rejects as a model id are carried as `effortParams` instead.
-    modelId: model.id.replace(/-max$/, ""),
+    // `sendId` is a published usable id (level slug or backend default), never the
+    // constructed family id — see the note above.
+    modelId: sendId,
     maxMode: maxMode === true || model.id.endsWith("-max"),
     contextParam: typeof contextParam === "string" ? contextParam : undefined,
     ...(effortParams && effortParams.length > 0 ? { effortParams } : {}),

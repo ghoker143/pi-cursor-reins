@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file. Format follows
 
 ## 0.2.0 — 2026-09-29
 
+- **Fixed: `not_found` for constructed model ids.** `requested_model.model_id` was the
+  catalog's constructed family id, which AgentService rejects for many families (bare
+  `cursor-grok-4.6`, every `-fast` family id, and `claude-sonnet-5-thinking` with effort
+  params — all reproduced live). Remeasurement across grok/gpt/claude shows the published
+  per-level slug is accepted for every family, while slug + effort params together are
+  rejected. The provider now sends the thinking level's published slug (or the
+  backend-marked default variant's slug when no level is selected) and drops the effort
+  params on that path. Model list ids also normalize away the `cursor-` prefix some
+  families carry, so `grok-4.6` lists consistently with `grok-4.7`.
+
 - **Fixed: parallel tool-call batches could starve.** When the backend spread one turn's
   parallel exec frames over more than the 150 ms burst window (observed under concurrent
   load), lifts landing after the yield were emitted into an already-ended stream: Pi never

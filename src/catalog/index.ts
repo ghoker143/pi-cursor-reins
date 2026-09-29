@@ -143,11 +143,19 @@ export function mapCatalog(
       if (variant.legacySlug !== undefined && variant.legacySlug !== "") variantBySlug.set(variant.legacySlug, variant);
     }
   }
-  for (const [id, members] of grouped) {
+  for (const [rawId, members] of grouped) {
+    // Display-id normalization: Cursor publishes some families with a `cursor-`
+    // prefix (cursor-grok-4.6) and their successors without (grok-4.7). Strip the
+    // prefix when it collides with nothing so the pi model list is consistent.
+    // The id is display-only; the wire model_id comes from thinkingLevelMap.
+    const stripped = rawId.startsWith("cursor-") ? rawId.slice("cursor-".length) : rawId;
+    const id = stripped !== rawId && !grouped.has(stripped) ? stripped : rawId;
     const memberIds = new Set(members.map((m) => m.model.modelId));
     const base = available.models.find(
       (m) =>
+        m.name === rawId ||
         m.name === id ||
+        m.idAliases.includes(rawId) ||
         m.idAliases.includes(id) ||
         m.legacySlugs.some((s) => memberIds.has(s)) ||
         m.variants.some((v) => v.legacySlug !== undefined && memberIds.has(v.legacySlug)),
@@ -157,14 +165,20 @@ export function mapCatalog(
     const cursorParams: Record<string, { id: string; value: string }[]> = {};
     for (const m of members) {
       thinkingLevelMap[m.level] = m.model.modelId;
-      // These slugs are the model DISPLAY id for that effort level; AgentService rejects
-      // them as requested_model.model_id (`not_found`, measured 2026-09-28). The knob is
-      // really the variant's parameters, so carry those and send them as parameters.
+      // The per-level slugs ARE valid requested_model.model_id values (they come
+      // from GetUsableModels verbatim; measured 2026-09-29). What AgentService
+      // rejects is the CONSTRUCTED family id (e.g. bare `cursor-grok-4.6` or any
+      // `-fast` family id) — familyFor invents those and they are not published.
       const params = (variantBySlug.get(m.model.modelId)?.parameterValues ?? []).filter(
         (p) => p.id !== "context" && p.id !== "fast",
       );
       if (params.length > 0) cursorParams[m.level] = params;
     }
+    // Default slug for requests that carry no explicit thinking level: the
+    // backend marks a default variant; its legacySlug is a published usable id.
+    const defaultSlug = base.variants.find(
+      (v) => v.isDefaultNonMaxConfig === true && v.legacySlug !== undefined && v.legacySlug !== "",
+    )?.legacySlug;
     const capturedName =
       base.clientDisplayName && base.clientDisplayName !== ""
         ? base.clientDisplayName
@@ -175,6 +189,7 @@ export function mapCatalog(
         ...(maxMode ? { cursorMaxMode: true } : {}),
         ...(context === undefined ? {} : { cursorContext: context }),
         ...(Object.keys(cursorParams).length > 0 ? { cursorParams } : {}),
+        ...(maxMode || defaultSlug === undefined ? {} : { cursorDefaultModelId: defaultSlug }),
       };
       rows.push({
         id: `${id}${maxMode ? "-max" : ""}`,

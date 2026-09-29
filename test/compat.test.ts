@@ -26,8 +26,7 @@ function ctx(messages: TranscriptContext["messages"]): TranscriptContext {
   return { messages } as TranscriptContext;
 }
 
-test("T-COMPAT: the thinking level becomes a Cursor variant parameter", () => {
-  const reasoned = {
+test("T-COMPAT: the thinking level becomes a Cursor variant parameter", () => {const reasoned = {
     ...model,
     reasoning: true,
     samplingParams: {
@@ -51,6 +50,42 @@ test("T-COMPAT: the thinking level becomes a Cursor variant parameter", () => {
     samplingParams: { cursorParams: { low: [{ id: "effort", value: "low" }] } },
   } as never);
   assert.deepEqual(viaOptions.effortParams, [{ id: "effort", value: "low" }]);
+});
+
+test("T-COMPAT: catalog-carrying rows send the published level slug as model_id", () => {
+  // Measured 2026-09-29: AgentService accepts published GetUsableModels slugs for
+  // every family, rejects constructed family ids (bare `cursor-grok-4.6`, all
+  // `-fast` family ids), and rejects slug + effortParams combos. So a row with
+  // catalog data sends the slug alone.
+  const grok = {
+    ...model,
+    id: "grok-4.6",
+    reasoning: true,
+    thinkingLevelMap: {
+      low: "cursor-grok-4.6-low",
+      medium: "cursor-grok-4.6-medium",
+      high: "cursor-grok-4.6-high",
+    },
+    samplingParams: {
+      cursorDefaultModelId: "cursor-grok-4.6-medium",
+      cursorParams: { high: [{ id: "effort", value: "high" }] },
+    },
+  } as unknown as Model<string>;
+  const messages = [{ role: "user", content: "hi", timestamp: 1 }] as TranscriptContext["messages"];
+  const at = (reasoning?: string) =>
+    transcriptToIr(ctx(messages), grok, { sessionId: "s", ...(reasoning ? { reasoning } : {}) } as never);
+  assert.equal(at("high").modelId, "cursor-grok-4.6-high", "the selected level's published slug");
+  assert.equal(at("high").effortParams, undefined, "the slug already encodes the variant");
+  assert.equal(at(undefined).modelId, "cursor-grok-4.6-medium", "no level → backend-marked default slug");
+  assert.equal(at("max").modelId, "cursor-grok-4.6-medium", "unmapped level → default slug, not family id");
+
+  const noDefault = {
+    ...grok,
+    samplingParams: {},
+    thinkingLevelMap: { off: "composer-2.5" },
+  } as unknown as Model<string>;
+  const irOff = transcriptToIr(ctx(messages), noDefault, { sessionId: "s" } as never);
+  assert.equal(irOff.modelId, "composer-2.5", "no default slug → the off level's published id");
 });
 
 test("T-COMPAT: pi 0.87 system+tools live on system messages", () => {
