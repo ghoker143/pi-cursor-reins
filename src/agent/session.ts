@@ -291,7 +291,10 @@ function isLiveContinuation(ir: InferenceIR, run: ActiveRun): boolean {
   const last = ir.messages[ir.messages.length - 1];
   if (last?.role === "user") return false;
   const results = trailingToolResults(ir);
-  return run.pending.every((p) => results.has(p.toolCallId));
+  // At least one pending answered: a partial batch still continues the run —
+  // the unanswered pendings are re-yielded as a second toolUse batch (late
+  // parallel lifts can land after the burst-window yield; see continueRun).
+  return run.pending.some((p) => results.has(p.toolCallId));
 }
 
 function armFirstToken(run: ActiveRun): void {
@@ -300,6 +303,29 @@ function armFirstToken(run: ActiveRun): void {
     () => stall(run, "Cursor AgentService first-token timed out"),
     envMs("CURSOR_PROVIDER_FIRST_TOKEN_MS", DEFAULT_FIRST_TOKEN_MS),
   );
+}
+
+/**
+ * Second toolUse batch: some pendings were lifted after the first burst-window
+ * yield (backend frames for parallel tool calls can arrive spread over more
+ * than MCP_BURST_MS), so Pi never saw them and this continuation answered only
+ * the first batch. Re-emit the unanswered pendings as tool_call events and
+ * yield again — Pi executes them and continues once more. Without this the
+ * unanswered execs starve and the backend stalls the turn.
+ */
+function continueRun(run: ActiveRun): void {
+  run.localRejections = 0;
+  run.sawWork = false;
+  for (const pending of run.pending) {
+    pushEvent(run, {
+      type: "tool_call",
+      id: pending.toolCallId,
+      name: pending.toolName,
+      arguments: {},
+      complete: true,
+    });
+  }
+  run.burst = setTimeout(() => yieldNow(run, "toolUse"), MCP_BURST_MS);
 }
 
 async function sendMcpResults(run: ActiveRun, ir: InferenceIR): Promise<void> {
@@ -708,7 +734,16 @@ export async function runAgentSession(options: AgentSessionOptions): Promise<{ e
     const events = await new Promise<IrEvent[]>((resolve, reject) => {
       existing.yieldTurn = resolve;
       existing.failTurn = reject;
-      void sendMcpResults(existing, ir).catch(reject);
+      void (async () => {
+        await sendMcpResults(existing, ir);
+        if (existing.closed) return;
+        if (existing.pending.length > 0) {
+          // Unanswered late lifts: hand them to Pi as a second batch.
+          continueRun(existing);
+          return;
+        }
+        armFirstToken(existing);
+      })().catch(reject);
     });
     return { events, warning };
   }

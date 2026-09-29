@@ -856,6 +856,76 @@ test("T-AGENT-SESSION: native shell lifts to the matched Pi tool; continuation e
   }
 });
 
+test("T-AGENT-SESSION: a parallel lift landing after the burst window is re-yielded, never starved", async () => {
+  __resetAgentRunsForTests();
+  const fake = await listen();
+  let phase: "await-run" | "await-result-1" | "await-result-2" | "done" = "await-run";
+  let closes = 0;
+  fake.onStream((stream) => {
+    stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+    const decoder = new ConnectFrameDecoder();
+    stream.on("data", (chunk: Uint8Array) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.endOfStream) continue;
+        if (phase === "await-run") {
+          phase = "await-result-1";
+          writeProto(stream, shellArgsFrame("echo one", 51));
+          return;
+        }
+        if (phase === "await-result-1" && isStreamClose(frame.body)) {
+          closes += 1;
+          phase = "await-result-2";
+          // The backend's second parallel exec lands well after MCP_BURST_MS.
+          setTimeout(() => writeProto(stream, shellArgsFrame("echo two", 52)), 400);
+          return;
+        }
+        if (phase === "await-result-2" && isStreamClose(frame.body)) {
+          closes += 1;
+          writeProto(stream, textDelta("both done"));
+          writeProto(stream, turnEnded());
+          writeTrailer(stream);
+          phase = "done";
+        }
+      }
+    });
+  });
+  try {
+    const withShell = (messages: InferenceIR["messages"]): InferenceIR =>
+      ir({ sessionId: "sess-burst", tools: [SHELL_TOOL], messages });
+    const history: InferenceIR["messages"] = [{ role: "user", text: "ping" }];
+
+    const first = await runAgentSession({ token: "tok", ir: withShell(history), origin: fake.origin });
+    const callA = first.events.find((e) => e.type === "tool_call");
+    assert.ok(callA && callA.type === "tool_call");
+    assert.deepEqual(callA.arguments, { command: "echo one" });
+
+    // Answer only the first batch: the second exec has not even been sent yet.
+    history.push(
+      { role: "assistant", toolCalls: [{ id: callA.id, name: "ctx_shell", arguments: { command: "echo one" } }] },
+      { role: "tool", toolResult: { toolCallId: callA.id, toolName: "ctx_shell", result: "one\n", isError: false } },
+    );
+    const second = await runAgentSession({ token: "tok", ir: withShell(history), origin: fake.origin });
+    const callB = second.events.find((e) => e.type === "tool_call");
+    assert.ok(callB && callB.type === "tool_call", "the late lift is re-yielded as a second batch");
+    assert.deepEqual(callB.arguments, { command: "echo two" });
+    assert.equal(
+      second.events.find((e) => e.type === "done" && e.stopReason === "toolUse") !== undefined,
+      true,
+    );
+
+    history.push(
+      { role: "assistant", toolCalls: [{ id: callB.id, name: "ctx_shell", arguments: { command: "echo two" } }] },
+      { role: "tool", toolResult: { toolCallId: callB.id, toolName: "ctx_shell", result: "two\n", isError: false } },
+    );
+    const third = await runAgentSession({ token: "tok", ir: withShell(history), origin: fake.origin });
+    assert.equal(third.events.some((e) => e.type === "text" && e.delta === "both done"), true);
+    assert.equal(closes, 2, "both exec replies closed their streams");
+  } finally {
+    fake.server.close();
+    __resetAgentRunsForTests();
+  }
+});
+
 test("T-AGENT-SESSION: native stream shell closes with stream_close after the exit event", async () => {
   __resetAgentRunsForTests();
   const fake = await listen();

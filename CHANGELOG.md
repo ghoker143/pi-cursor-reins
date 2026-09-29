@@ -6,6 +6,13 @@ All notable changes to this project are documented in this file. Format follows
 
 ## 0.2.0 — 2026-09-29
 
+- **Fixed: parallel tool-call batches could starve.** When the backend spread one turn's
+  parallel exec frames over more than the 150 ms burst window (observed under concurrent
+  load), lifts landing after the yield were emitted into an already-ended stream: Pi never
+  saw them, the execs starved, and the turn stalled. Continuations now accept partial
+  answers and re-yield unanswered pendings as a second toolUse batch. Regression test
+  drives the second exec 400 ms late.
+
 - **Native exec translation is now the default behavior**: a Cursor native exec
   (shell/shellStream/read/write/delete/grep incl. Glob) is translated
   to a regular Pi `tool_call` — capability-matched against the actually registered tools, never a
