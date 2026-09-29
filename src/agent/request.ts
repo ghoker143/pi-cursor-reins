@@ -14,11 +14,10 @@ import {
   type McpToolWire,
 } from "../proto/agent.ts";
 import { BlobStore } from "./blob-store.ts";
-import { localToolPolicyText } from "./policy.ts";
 import { buildRootPromptMessages, encodeRootPromptMessage, splitCurrentUser, systemPromptRootMessage } from "./root-prompt.ts";
 import { toWireImages } from "./images.ts";
 import type { ConversationHandle } from "./handle-store.ts";
-import { blobsIntoStore } from "./handle-store.ts";
+import { blobsIntoStore, toolsetKeyOf } from "./handle-store.ts";
 
 export interface AgentRequest {
   bytes: Uint8Array;
@@ -50,9 +49,19 @@ export function buildAgentRequest(
   const { history, userText, userImages } = splitCurrentUser(ir);
   const uri = workspaceUri();
   const tools = mcpToolsOf(ir);
+  // The backend retains the mcp_tools registration across resume requests
+  // (PROTOCOL-AGENT §5.1), so re-sending the unchanged set every turn is pure
+  // token burn. Omit when the handle proves we already sent exactly this set;
+  // re-send on any change (or for handles predating toolsetKey).
+  // CURSOR_PROVIDER_RESEND_MCP_ON_RESUME=1 restores unconditional re-send.
+  const omitOnResume =
+    resume !== undefined &&
+    process.env.CURSOR_PROVIDER_RESEND_MCP_ON_RESUME !== "1" &&
+    resume.toolsetKey !== undefined &&
+    resume.toolsetKey === toolsetKeyOf(tools);
   if (resume) blobsIntoStore(store, resume.blobs);
   const prompt = resume
-    ? [systemPromptRootMessage(localToolPolicyText(ir.tools) + (ir.systemPrompt.trim() ? `\n\n${ir.systemPrompt}` : ""))]
+    ? [systemPromptRootMessage(ir.systemPrompt)]
     : buildRootPromptMessages(ir, history);
   const promptIds = prompt.map((m) => store.put(encodeRootPromptMessage(m)));
   const selected = store.put(encodeSelectedContextBlob(promptIds, "pi"));
@@ -66,7 +75,7 @@ export function buildAgentRequest(
     conversationState,
     userMessage: encodeUserMessage({ text: userText, messageId, selectedContextBlob: selected, images }),
     requestedModel: encodeRequestedModel(ir.modelId, ir.maxMode, ir.contextParam, ir.effortParams),
-    mcpTools: encodeMcpTools(tools),
+    mcpTools: omitOnResume ? encodeMcpTools([]) : encodeMcpTools(tools),
     conversationId,
   });
   if (bytes.byteLength > CONNECT_MAX_FRAME_BYTES) {

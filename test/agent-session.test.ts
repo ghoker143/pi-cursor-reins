@@ -738,6 +738,208 @@ test("T-AGENT-SESSION: an oversized tool result is truncated with an explicit ma
   }
 });
 
+// ---------------------------------------------------------------------------
+// Native exec → Pi tool translation (default behavior, PROTOCOL-AGENT §5.1)
+// ---------------------------------------------------------------------------
+
+const SHELL_TOOL = {
+  name: "ctx_shell",
+  description: "Run a shell command",
+  jsonSchema: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number" } } },
+};
+
+function shellStreamExecFrame(command: string, id: number): Uint8Array {
+  const payload = encodeFields((w) => writeString(w, 1, command));
+  const exec = encodeFields((w) => {
+    writeUint32Always(w, 1, id);
+    writeBytesAlways(w, 14, payload);
+    writeString(w, 15, "exec-stream");
+  });
+  return encodeFields((w) => writeBytes(w, 2, exec));
+}
+
+/** (id, resultField, raw text) of the exec_client_message in a client frame. */
+function execReplyShape(body: Uint8Array): { id: number; resultField: number; text: string } | undefined {
+  let out: { id: number; resultField: number; text: string } | undefined;
+  forEachField(body, (field, wire, reader) => {
+    if (field !== 2) {
+      skipUnknown(reader, wire, field);
+      return;
+    }
+    forEachField(expectBytes(reader, wire), (f, w, r) => {
+      if (f === 1) {
+        out = { id: Number(expectVarint(r, w)), resultField: 0, text: "" };
+      } else if (out !== undefined && w === WireType.LengthDelimited && f !== 15) {
+        // field 15 is exec_id (a string), not a result arm.
+        out.resultField = f;
+        out.text = new TextDecoder().decode(expectBytes(r, w));
+      } else skipUnknown(r, w, f);
+    });
+  });
+  return out;
+}
+
+/** True when the frame is an exec_client_control_message carrying stream_close. */
+function isStreamClose(body: Uint8Array): boolean {
+  let found = false;
+  forEachField(body, (field, wire, reader) => {
+    if (field !== 5) {
+      skipUnknown(reader, wire, field);
+      return;
+    }
+    forEachField(expectBytes(reader, wire), (f, w, r) => {
+      if (f === 1) found = true;
+      skipUnknown(r, w, f); // forEachField never auto-skips: always consume
+    });
+  });
+  return found;
+}
+
+test("T-AGENT-SESSION: native shell lifts to the matched Pi tool; continuation encodes shell success", async () => {
+  __resetAgentRunsForTests();
+  const fake = await listen();
+  let phase: "await-run" | "await-result" | "done" = "await-run";
+  const replies: { id: number; resultField: number; text: string }[] = [];
+  fake.onStream((stream) => {
+    stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+    const decoder = new ConnectFrameDecoder();
+    stream.on("data", (chunk: Uint8Array) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.endOfStream) continue;
+        if (phase === "await-run") {
+          phase = "await-result";
+          writeProto(stream, shellArgsFrame("echo hi", 41));
+          return;
+        }
+        if (phase === "await-result") {
+          const shape = execReplyShape(frame.body);
+          if (shape) replies.push(shape);
+          if (isStreamClose(frame.body)) {
+            // Every native result sequence ends with stream_close; answer once it lands.
+            writeProto(stream, textDelta("ran it"));
+            writeProto(stream, turnEnded());
+            writeTrailer(stream);
+            phase = "done";
+          }
+        }
+      }
+    });
+  });
+  try {
+    const irWithShell = (messages: InferenceIR["messages"]): InferenceIR =>
+      ir({ sessionId: "sess-nat", tools: [SHELL_TOOL], messages });
+    const first = await runAgentSession({ token: "tok", ir: irWithShell([{ role: "user", text: "ping" }]), origin: fake.origin });
+    const call = first.events.find((e) => e.type === "tool_call");
+    assert.ok(call && call.type === "tool_call");
+    assert.equal(call.name, "ctx_shell", "the native exec becomes the capability-matched Pi tool");
+    assert.deepEqual(call.arguments, { command: "echo hi" });
+    const done = first.events.find((e) => e.type === "done");
+    assert.equal(done && done.type === "done" ? done.stopReason : "", "toolUse");
+
+    const second = await runAgentSession({
+      token: "tok",
+      ir: irWithShell([
+        { role: "user", text: "ping" },
+        { role: "assistant", toolCalls: [{ id: call.id, name: "ctx_shell", arguments: { command: "echo hi" } }] },
+        { role: "tool", toolResult: { toolCallId: call.id, toolName: "ctx_shell", result: "hi\n", isError: false } },
+      ]),
+      origin: fake.origin,
+    });
+    assert.equal(second.events.some((e) => e.type === "text" && e.delta === "ran it"), true);
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0]?.id, 41, "the reply answers the original exec request id");
+    assert.equal(replies[0]?.resultField, 2, "shell_result");
+    assert.ok(replies[0]?.text.includes("hi\n"), "the Pi tool output lands in the native success shape");
+  } finally {
+    fake.server.close();
+    __resetAgentRunsForTests();
+  }
+});
+
+test("T-AGENT-SESSION: native stream shell closes with stream_close after the exit event", async () => {
+  __resetAgentRunsForTests();
+  const fake = await listen();
+  let phase: "await-run" | "await-result" | "done" = "await-run";
+  const shapes: { id: number; resultField: number; text: string }[] = [];
+  let closed = false;
+  fake.onStream((stream) => {
+    stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+    const decoder = new ConnectFrameDecoder();
+    stream.on("data", (chunk: Uint8Array) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.endOfStream) continue;
+        if (phase === "await-run") {
+          phase = "await-result";
+          writeProto(stream, shellStreamExecFrame("echo hi", 42));
+          return;
+        }
+        if (phase === "await-result") {
+          if (isStreamClose(frame.body)) closed = true;
+          const shape = execReplyShape(frame.body);
+          if (shape) shapes.push(shape);
+          if (closed && shapes.length === 2) {
+            writeProto(stream, textDelta("done"));
+            writeProto(stream, turnEnded());
+            writeTrailer(stream);
+            phase = "done";
+          }
+        }
+      }
+    });
+  });
+  try {
+    const first = await runAgentSession({
+      token: "tok",
+      ir: ir({ sessionId: "sess-nats", tools: [SHELL_TOOL] }),
+      origin: fake.origin,
+    });
+    const call = first.events.find((e) => e.type === "tool_call");
+    assert.ok(call && call.type === "tool_call");
+    const second = await runAgentSession({
+      token: "tok",
+      ir: ir({
+        sessionId: "sess-nats",
+        tools: [SHELL_TOOL],
+        messages: [
+          { role: "user", text: "ping" },
+          { role: "assistant", toolCalls: [{ id: call.id, name: "ctx_shell", arguments: { command: "echo hi" } }] },
+          { role: "tool", toolResult: { toolCallId: call.id, toolName: "ctx_shell", result: "hi\n", isError: false } },
+        ],
+      }),
+      origin: fake.origin,
+    });
+    assert.equal(second.events.some((e) => e.type === "text" && e.delta === "done"), true);
+    assert.deepEqual(shapes.map((s) => s.resultField), [14, 14], "stdout event then exit event");
+    assert.equal(closed, true, "streamed exec must be terminated with stream_close (§5.1)");
+    assert.ok(shapes.every((s) => s.id === 42));
+  } finally {
+    fake.server.close();
+    __resetAgentRunsForTests();
+  }
+});
+
+test("T-AGENT-SESSION: native mode falls back to reject when no Pi tool can serve the case", async () => {
+  __resetAgentRunsForTests();
+  const fake = await listen();
+  fake.onStream(serveFrames([shellArgsFrame("ls", 51)], { endAfter: 1 }));
+  try {
+    const result = await runAgentSession({
+      token: "tok",
+      // "echo" has no command-ish name/schema/description: no capability match.
+      ir: ir({ sessionId: "sess-natx" }),
+      origin: fake.origin,
+    });
+    assert.equal(
+      result.events.some((e) => e.type === "tool_call"),
+      false,
+      "no capable Pi tool → no lift, the reject path answers instead",
+    );
+  } finally {
+    fake.server.close();
+    __resetAgentRunsForTests();
+  }
+});
+
 test("T-AGENT-SESSION: a real Pi tool call resets the miss budget", async () => {
   __resetAgentRunsForTests();
   const fake = await listen();

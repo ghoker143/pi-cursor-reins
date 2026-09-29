@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EXEC_CASES, EXEC_FIELD, encodeKvGetResult, encodeMcpSuccess, encodeRunRequest, encodeUserMessage } from "../src/proto/agent.ts";
-import { decideExec, localToolPolicyText, rankAlternatives, rankedTools, rejectReason, stripCursorMcpToolName, cursorMcpToolName, unknownExecThrowMessage } from "../src/agent/policy.ts";
+import { decideExec, rankAlternatives, rankedTools, rejectReason, stripCursorMcpToolName, cursorMcpToolName, unknownExecThrowMessage } from "../src/agent/policy.ts";
 import { BlobStore } from "../src/agent/blob-store.ts";
 import { buildRootPromptMessages, splitCurrentUser, systemPromptRootMessage } from "../src/agent/root-prompt.ts";
 import { buildAgentRequest } from "../src/agent/request.ts";
@@ -31,6 +31,7 @@ function exec(execCase: ExecCase | "unknown", over: Partial<DecodedExec> = {}): 
     execId: "e1",
     field: execCase === "unknown" ? 99 : EXEC_FIELD[execCase],
     case: execCase,
+    payload: new Uint8Array(),
     strings: { command: "ls", path: "/tmp/x", workingDirectory: "/tmp", url: "https://example.com", uri: "file://x" },
     ...over,
   };
@@ -96,30 +97,6 @@ test("T-AGENT: a rejection without a concrete value still names the parameter", 
   // the model would call it with no arguments and pi's validator would reject it.
   assert.match(rejectReason("grepArgs", tools, ""), /\{"pattern": "…"\}/);
   assert.match(rejectReason("grepArgs", tools, "TODO"), /\{"pattern": "TODO"\}/);
-});
-
-test("T-AGENT: root-prompt policy leads with the intent map", () => {
-  const tools: IrTool[] = [
-    { name: "ctx_shell", description: "shell", jsonSchema: { type: "object", properties: { command: { type: "string" } } } },
-    { name: "ctx_read", description: "r", jsonSchema: { type: "object", properties: { path: { type: "string" } } } },
-    { name: "ffgrep", description: "g", jsonSchema: { type: "object", properties: { pattern: { type: "string" } } } },
-    { name: "edit", description: "e", jsonSchema: { type: "object", properties: { path: { type: "string" } } } },
-  ];
-  const text = localToolPolicyText(tools);
-  const cmdAt = text.indexOf("Run commands with mcp_pi_ctx_shell");
-  const listAt = text.indexOf("Registered Pi MCP tools");
-  assert.ok(cmdAt > -1, "intent map present");
-  assert.ok(listAt > cmdAt, "full tool list comes after the intent map");
-  assert.match(text, /Search with mcp_pi_ffgrep/);
-  assert.match(text, /do not call or retry them/);
-  assert.match(text, /Cursor dynamic tools in the MCP namespace "pi"/);
-  assert.match(text, /CallDynamicTool/);
-  assert.match(text, /is NOT a reason to fall back/, "the missing-listing trap is called out explicitly");
-  // The dynamic-tool listing can omit schemas, so the policy text carries the argument
-  // names itself; a bare call would be rejected by pi's own argument validation.
-  assert.match(text, /mcp_pi_ctx_shell\(command\)/);
-  assert.match(text, /mcp_pi_ffgrep\(pattern\)/);
-  assert.match(localToolPolicyText([]), /No Pi MCP tools are exposed/);
 });
 
 test("T-AGENT: tool_not_found alternatives rank by shared capability word", () => {

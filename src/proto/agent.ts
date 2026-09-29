@@ -100,6 +100,8 @@ export interface DecodedExec {
   case: ExecCase | "unknown";
   mcp?: McpCall;
   strings: ExecStrings;
+  /** Raw oneof payload bytes, kept for per-case decoders (native translation). */
+  payload: Uint8Array;
   /**
    * First length-delimited field we could not classify. Cursor adds native exec
    * cases over time; keeping the raw arm lets a drift report name the new field
@@ -233,6 +235,7 @@ function decodeExec(bytes: Uint8Array): DecodedExec {
     case: execCase,
     mcp: execCase === "mcpArgs" ? decodeMcp(payload) : undefined,
     strings: decodeExecStrings(payload),
+    payload,
     ...(unknown ? { unknown } : {}),
   };
 }
@@ -556,6 +559,41 @@ export function encodeExecThrow(id: number, error: string): Uint8Array {
       encodeFields((tw) => {
         writeUint32Always(tw, 1, id);
         writeString(tw, 2, error);
+      }),
+    );
+  });
+  return encodeFields((w) => writeBytes(w, 5, control));
+}
+
+/**
+ * Every native exec reply sequence ends with ExecClientControlMessage.stream_close
+ * {id} — single-result execs too, not just streams (the reference client closes
+ * unconditionally). Measured: without it the backend journals the result and
+ * stalls the turn heartbeat-only.
+ */
+export function encodeExecStreamClose(id: number): Uint8Array {
+  const control = encodeFields((w) => {
+    writeBytesAlways(
+      w,
+      1,
+      encodeFields((sw) => {
+        writeUint32Always(sw, 1, id);
+      }),
+    );
+  });
+  return encodeFields((w) => writeBytes(w, 5, control));
+}
+
+/** ExecClientControlMessage.heartbeat (field 3) {id=1} — keeps a parked native
+ * exec alive while Pi runs the translated tool (3 s cadence, like the
+ * reference client's per-exec heartbeat). */
+export function encodeExecHeartbeat(id: number): Uint8Array {
+  const control = encodeFields((w) => {
+    writeBytesAlways(
+      w,
+      3,
+      encodeFields((sw) => {
+        writeUint32Always(sw, 1, id);
       }),
     );
   });

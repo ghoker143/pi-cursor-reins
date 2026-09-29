@@ -79,7 +79,13 @@ export function schemaProperties(tool: IrTool): string[] {
   return Object.keys((tool.jsonSchema as { properties?: Record<string, unknown> })?.properties ?? {});
 }
 
-export function rankedTools(execCase: string, tools: IrTool[]): IrTool[] {
+interface RankedRow {
+  tool: IrTool;
+  index: number;
+  s: number;
+}
+
+function scoredTools(execCase: string, tools: IrTool[]): RankedRow[] {
   const hints = LOCAL_HINTS[execCase] ?? [];
   const fragments = CAPABILITY_FRAGMENTS[execCase] ?? [];
   const commandIntent = COMMAND_INTENT_CASES.has(execCase);
@@ -97,8 +103,21 @@ export function rankedTools(execCase: string, tools: IrTool[]): IrTool[] {
   };
   return tools
     .map((tool, index) => ({ tool, index, s: score(tool) }))
-    .sort((a, b) => b.s - a.s || a.index - b.index)
-    .map((row) => row.tool);
+    .sort((a, b) => b.s - a.s || a.index - b.index);
+}
+
+export function rankedTools(execCase: string, tools: IrTool[]): IrTool[] {
+  return scoredTools(execCase, tools).map((row) => row.tool);
+}
+
+/**
+ * The best tool for this exec case, or undefined when NOTHING matched (score 0).
+ * Unlike rankedTools, which always returns the full ordering for hint text, this
+ * gates actual translation: a zero-score tool must never receive native args.
+ */
+export function matchToolFor(execCase: string, tools: IrTool[]): IrTool | undefined {
+  const best = scoredTools(execCase, tools)[0];
+  return best !== undefined && best.s > 0 ? best.tool : undefined;
 }
 
 /** Best tool for running commands, for loop-guard and policy hints. */
@@ -190,57 +209,6 @@ export function rejectReason(execCase: string, tools: IrTool[], detail = "", esc
     `${NATIVE_EXEC_REJECT} To ${intent} from Pi, call the MCP tool \`${bestName}\`${example}.` +
     (alternates.length > 0 ? ` Usable alternatives: ${alternates.join(", ")}.` : "")
   );
-}
-
-/**
- * `name(arg, arg)`. Cursor's dynamic-tool listing does not always hand the model the
- * input schemas (measured 2026-09-28: `GetDynamicTools` misses the `pi` namespace while
- * `CallDynamicTool` works), and a model without the schema calls the tool bare — pi then
- * rejects the call on its own argument validation, costing a round trip and sometimes the
- * whole turn. Names are cheap; guessing is not.
- */
-function argSummary(tool: IrTool): string {
-  const schema = tool.jsonSchema as { properties?: Record<string, unknown>; required?: unknown };
-  const props = Object.keys(schema.properties ?? {});
-  const required = Array.isArray(schema.required)
-    ? schema.required.filter((r): r is string => typeof r === "string" && props.includes(r))
-    : [];
-  const names = (required.length > 0 ? required : props).slice(0, 4);
-  const label = cursorMcpToolName(tool.name);
-  return names.length > 0 ? `${label}(${names.join(", ")})` : label;
-}
-
-export function localToolPolicyText(tools: IrTool[]): string {
-  const names = tools.map((t) => cursorMcpToolName(t.name));
-  const lines = [
-    "Local file reads, searches, directory listings, writes, deletions and shell commands must use Pi MCP tools. " +
-      "Native Cursor local tools (shell, read, grep, write, grind, …) are disabled; do not call or retry them.",
-    // Learned live (grok-4.7 / composer-2.5, 2026-09-28): these tools do not always appear
-    // in the model's static tool list, and `GetDynamicTools` does not reliably enumerate the
-    // `pi` namespace either. Models that read that as "Pi is unavailable" fall back to
-    // (rejected) native tools until the loop guard kills the turn. Say the tools are
-    // callable anyway, and carry each tool's argument names inline so a model without the
-    // schema still calls it correctly instead of guessing (guessing costs a pi-side
-    // validation failure and a round trip).
-    "Pi MCP tools reach you as Cursor dynamic tools in the MCP namespace \"pi\" (model-facing ids look like `mcp_pi_<name>`). " +
-      'They stay callable even when your tool list omits them: call CallDynamicTool with namespace "pi" and the id below. ' +
-      "That GetDynamicTools cannot enumerate the namespace is NOT a reason to fall back to Cursor native tools.",
-  ];
-  const cmd = rankedTools("shellArgs", tools)[0];
-  const read = rankedTools("readArgs", tools)[0];
-  const search = rankedTools("grepArgs", tools)[0];
-  const edit = rankedTools("writeArgs", tools)[0];
-  if (cmd) lines.push(`Run commands with ${cursorMcpToolName(cmd.name)} ({"command": "…"}).`);
-  if (read) lines.push(`Read files with ${cursorMcpToolName(read.name)}.`);
-  if (search) lines.push(`Search with ${cursorMcpToolName(search.name)}.`);
-  if (edit && edit !== cmd) lines.push(`Edit/write files with ${cursorMcpToolName(edit.name)}.`);
-  lines.push(
-    names.length > 0
-      ? `Registered Pi MCP tools, with their arguments: ${tools.map(argSummary).join(", ")}. ` +
-          "Follow each tool's input schema; every call needs its required arguments."
-      : "No Pi MCP tools are exposed for this request. Local operations are unavailable.",
-  );
-  return lines.join(" ");
 }
 
 export type ExecDecision =

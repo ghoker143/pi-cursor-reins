@@ -27,6 +27,18 @@ export interface ConversationHandle {
   checkpoint: Uint8Array;
   fingerprint: string;
   blobs: { idHex: string; data: Uint8Array }[];
+  /**
+   * Sorted-joined names of the MCP tool set last sent on the wire for this
+   * conversation. The backend retains the registration across resume requests
+   * (PROTOCOL-AGENT §5.1), so a matching key lets the resume omit mcp_tools;
+   * a changed set (or a handle predating this field) re-sends the full list.
+   */
+  toolsetKey?: string;
+}
+
+/** Stable identity of a declared tool set, for the resume-omit decision. */
+export function toolsetKeyOf(tools: { name: string }[]): string {
+  return tools.map((t) => t.name).sort().join("\n");
 }
 
 interface HandleFile {
@@ -35,6 +47,7 @@ interface HandleFile {
   checkpoint: string;
   fingerprint: string;
   blobs: { id: string; data: string }[];
+  toolsetKey?: string;
 }
 
 export function handleDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -165,6 +178,7 @@ export function loadHandle(sessionId: string): ConversationHandle | undefined {
       checkpoint,
       fingerprint: parsed.fingerprint,
       blobs,
+      ...(typeof parsed.toolsetKey === "string" ? { toolsetKey: parsed.toolsetKey } : {}),
     };
   } catch {
     return undefined;
@@ -189,6 +203,7 @@ export function saveHandle(sessionId: string, handle: ConversationHandle): void 
       id: b.idHex,
       data: Buffer.from(b.data).toString("base64"),
     })),
+    ...(handle.toolsetKey !== undefined ? { toolsetKey: handle.toolsetKey } : {}),
   };
   // Handle files carry conversation content: write 0600, atomically via rename so a
   // crash mid-write never leaves half a JSON document behind.

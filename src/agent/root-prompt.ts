@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { MAX_REPLAYED_TOOL_RESULT_CHARS } from "../constants.ts";
 import type { InferenceIR, IrImage, IrMessage } from "../session/ir.ts";
-import { cursorMcpToolName, localToolPolicyText } from "./policy.ts";
+import { cursorMcpToolName } from "./policy.ts";
 
 export interface RootPromptTextPart {
   type: "text";
@@ -95,8 +95,7 @@ export function trailingToolResults(
 }
 
 export function buildRootPromptMessages(ir: InferenceIR, history: IrMessage[]): RootPromptMessage[] {
-  const policy = localToolPolicyText(ir.tools);
-  const rules = ir.systemPrompt.trim() ? `${ir.systemPrompt}\n\n${policy}` : policy;
+  const rules = ir.systemPrompt;
   const messages: RootPromptMessage[] = [];
   if (rules.trim()) messages.push(systemPromptRootMessage(rules));
 

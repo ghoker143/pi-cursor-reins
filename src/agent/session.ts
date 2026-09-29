@@ -18,6 +18,8 @@ import {
   decodeAgentServerMessage,
   encodeClientHeartbeat,
   encodeExecClientMessage,
+  encodeExecStreamClose,
+  encodeExecHeartbeat,
   encodeExecThrow,
   encodeInteractionResponse,
   encodeKvGetResult,
@@ -49,6 +51,15 @@ import {
   unknownExecThrowMessage,
 } from "./policy.ts";
 import { decodeIrImage } from "./images.ts";
+import {
+  decodeNativeArgs,
+  encodeNativeResultFromPi,
+  logNativeExec,
+  nativeExecMode,
+  translateNativeToPi,
+  tryNativeExecInproc,
+  type NativeArgs,
+} from "./native.ts";
 import { buildAgentRequest } from "./request.ts";
 import { trailingToolResults, splitCurrentUser } from "./root-prompt.ts";
 import type { ConversationHandle } from "./handle-store.ts";
@@ -58,6 +69,7 @@ import {
   fingerprintAfterTurn,
   remoteLooksStale,
   saveHandle,
+  toolsetKeyOf,
 } from "./handle-store.ts";
 
 export interface PendingMcp {
@@ -65,6 +77,10 @@ export interface PendingMcp {
   execId: string;
   toolCallId: string;
   toolName: string;
+  /** Set when this pending came from a native exec translated to a Pi tool
+   * call: the continuation encodes the native success/error shape, not an
+   * MCP result (PROTOCOL-AGENT §5.1). */
+  native?: NativeArgs;
 }
 
 interface ActiveRun {
@@ -93,6 +109,8 @@ interface ActiveRun {
   firstTimer: ReturnType<typeof setTimeout> | undefined;
   /** Failsafe while parked on a toolUse yield; Pi normally clears it by continuing. */
   watchdog: ReturnType<typeof setTimeout> | undefined;
+  /** Per-exec heartbeat while a translated native exec is parked on Pi (3 s). */
+  execHeartbeat: ReturnType<typeof setInterval> | undefined;
   abortListener: { signal: AbortSignal; listener: () => void } | undefined;
   sawWork: boolean;
   yieldTurn?: (events: IrEvent[]) => void;
@@ -200,6 +218,8 @@ function destroyRun(run: ActiveRun): void {
   debugLog({ event: "agent-destroy", sessionId: run.sessionId, pending: run.pending.length });
   if (run.heartbeat) clearInterval(run.heartbeat);
   run.heartbeat = undefined;
+  if (run.execHeartbeat) clearInterval(run.execHeartbeat);
+  run.execHeartbeat = undefined;
   if (run.burst) clearTimeout(run.burst);
   if (run.workIdle) clearTimeout(run.workIdle);
   if (run.firstTimer) clearTimeout(run.firstTimer);
@@ -235,6 +255,7 @@ function persistRemoteHandle(run: ActiveRun): void {
     checkpoint: run.checkpoint,
     fingerprint: fingerprintAfterTurn(run.ir.messages, run.events),
     blobs: run.blob.snapshot(),
+    toolsetKey: toolsetKeyOf(run.tools),
   });
 }
 
@@ -291,6 +312,26 @@ async function sendMcpResults(run: ActiveRun, ir: InferenceIR): Promise<void> {
       continue;
     }
     const text = truncateToolText(result.result);
+    if (pending.native) {
+      // Native exec translated to a Pi tool call: answer in the native shape
+      // (and close the stream for shell_stream), not as an MCP result.
+      const reply = encodeNativeResultFromPi(pending.native, text, result.isError);
+      logNativeExec(pending.native.case, pending.execId, reply);
+      for (const frame of reply.frames) {
+        await run.bidi.write(
+          encodeExecClientMessage({
+            id: frame.id ?? pending.id,
+            execId: pending.execId,
+            resultField: frame.resultField,
+            resultBytes: frame.resultBytes,
+          }),
+        );
+      }
+      if (reply.closeStream) {
+        await run.bidi.write(encodeExecStreamClose(pending.id));
+      }
+      continue;
+    }
     const images = result.images.map((image) => decodeIrImage(image, "toolResult"));
     await run.bidi.write(
       encodeExecClientMessage({
@@ -339,8 +380,94 @@ function noteLocalMiss(run: ActiveRun, kind: string, action: string, extra: Reco
   );
 }
 
+/** While a native exec is parked on a Pi tool call, keep its exec id warm the
+ * way the reference client does (ExecClientHeartbeat every 3 s) so the backend
+ * never times the exec out during a long Pi-side execution. */
+function armExecHeartbeat(run: ActiveRun): void {
+  if (run.execHeartbeat) return;
+  run.execHeartbeat = setInterval(() => {
+    const ids = run.pending.filter((p) => p.native !== undefined).map((p) => p.id);
+    if (ids.length === 0) {
+      if (run.execHeartbeat) clearInterval(run.execHeartbeat);
+      run.execHeartbeat = undefined;
+      return;
+    }
+    for (const id of ids) {
+      run.bidi.write(encodeExecHeartbeat(id)).catch(() => {});
+    }
+  }, 3_000);
+  run.execHeartbeat.unref();
+}
+
 async function handleExec(run: ActiveRun, exec: DecodedExec): Promise<void> {
   const tools = run.tools.map((t) => ({ name: t.name, description: t.description, jsonSchema: t.jsonSchema }));
+  // Native exec translation (PROTOCOL-AGENT §5.1). "pi" lifts the exec to a
+  // regular Pi tool call (Pi's permission system executes; the result is
+  // encoded back into the native shape on continuation). "inproc" is the
+  // probe-only path that executes in-process to validate the wire shapes.
+  const mode = nativeExecMode();
+  if (mode === "inproc") {
+    const reply = await tryNativeExecInproc(exec);
+    if (reply) {
+      logNativeExec(exec.case, exec.execId, reply);
+      pushEvent(run, {
+        type: "tool_call",
+        id: exec.execId || String(exec.id),
+        name: `native:${exec.case}`,
+        arguments: { summary: reply.summary },
+        complete: true,
+      });
+      for (const frame of reply.frames) {
+        await run.bidi.write(
+          encodeExecClientMessage({ id: frame.id ?? exec.id, execId: exec.execId, resultField: frame.resultField, resultBytes: frame.resultBytes }),
+        );
+      }
+      if (reply.closeStream) {
+        await run.bidi.write(encodeExecStreamClose(exec.id));
+      }
+      return;
+    }
+  }
+  if (mode === "pi") {
+    let nativeArgs: NativeArgs | null = null;
+    try {
+      nativeArgs = decodeNativeArgs(exec);
+    } catch (err) {
+      // A payload we cannot decode must degrade to the policy reject, never crash the run.
+      debugLog({
+        event: "agent-native-decode-error",
+        case: exec.case,
+        execId: exec.execId,
+        error: err instanceof Error ? err.message : String(err),
+        payloadHex: Buffer.from(exec.payload).toString("hex").slice(0, 400),
+      });
+    }
+    const target = nativeArgs ? translateNativeToPi(nativeArgs, tools) : null;
+    if (nativeArgs && target) {
+      const toolCallId = crypto.randomUUID();
+      run.pending.push({ id: exec.id, execId: exec.execId, toolCallId, toolName: target.tool.name, native: nativeArgs });
+      armExecHeartbeat(run);
+      debugLog({
+        event: "agent-exec",
+        case: exec.case,
+        action: "native-lift",
+        execId: exec.execId,
+        tool: target.tool.name,
+        payloadHex: Buffer.from(exec.payload).toString("hex").slice(0, 500),
+      });
+      pushEvent(run, {
+        type: "tool_call",
+        id: toolCallId,
+        name: target.tool.name,
+        arguments: target.args,
+        complete: true,
+      });
+      if (run.burst) clearTimeout(run.burst);
+      run.burst = setTimeout(() => yieldNow(run, "toolUse"), MCP_BURST_MS);
+      return;
+    }
+    // No capable Pi tool for this case: fall through to the policy reject.
+  }
   // Repeated misses mean the first wording did not land; the reject text hardens.
   const escalated = run.localRejections >= LOCAL_TOOL_ESCALATE_AFTER;
   const decision = decideExec(exec, tools, escalated);
@@ -445,6 +572,11 @@ async function handleFrame(run: ActiveRun, body: Uint8Array): Promise<void> {
     event: "agent-frame",
     case: msg.case,
     inner: msg.case === "interactionUpdate" ? msg.inner.case : undefined,
+    innerField: msg.case === "interactionUpdate" && msg.inner.case === "other" ? msg.inner.field : undefined,
+    innerHex:
+      msg.case === "interactionUpdate" && msg.inner.case === "other"
+        ? Buffer.from(body.subarray(0, 220)).toString("hex")
+        : undefined,
     exec: msg.case === "execServerMessage" ? msg.exec.case : undefined,
     execField: msg.case === "execServerMessage" ? msg.exec.field : undefined,
     execUnknownField: msg.case === "execServerMessage" ? msg.exec.unknown?.field : undefined,
@@ -522,8 +654,11 @@ async function handleFrame(run: ActiveRun, body: Uint8Array): Promise<void> {
         return;
       }
       if (kv.case === "setBlobArgs") {
-        if (!kv.blobData) throw driftError("Cursor setBlobArgs had no blob_data");
-        run.blob.put(kv.blobData);
+        // A setBlobArgs without blob_data is a reference to an already-stored
+        // blob id (dedup) — observed live after a Delete result. Ack it the
+        // same as a full write; only store when data is present.
+        if (kv.blobData) run.blob.put(kv.blobData);
+        else debugLog({ event: "agent-kv-ref-only", sessionId: run.sessionId });
         await run.bidi.write(encodeKvSetResult(kv.id));
         return;
       }
@@ -645,6 +780,7 @@ async function openAgentRun(
       workIdle: undefined,
       firstTimer: undefined,
       watchdog: undefined,
+      execHeartbeat: undefined,
       abortListener: undefined,
       sawWork: false,
       yieldTurn: resolve,
