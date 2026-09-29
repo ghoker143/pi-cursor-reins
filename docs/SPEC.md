@@ -63,9 +63,9 @@ both stopped. Hence this project — maintain only the thin "inference protocol"
 | pi | @earendil-works/pi-coding-agent, the host |
 | provider | pi's provider concept; this project implements id `cursor` |
 | RunInference | `aiserver.v1.InferenceService/RunInference`, a pure-inference bidi RPC (requires the managed-inference entitlement on the account) |
-| AgentService | `agent.v1.AgentService/Run`, the Cursor CLI agent channel; this provider refuses native exec and lifts MCP to pi |
+| AgentService | `agent.v1.AgentService/Run`, the Cursor CLI agent channel; this provider translates native exec into Pi tool calls and lifts MCP to pi (§FR-2, PROTOCOL-AGENT §5.1) |
 | transcript | the normalized conversation pi hands to the provider (`TranscriptContext`) |
-| native exec | local tool-execution requests in Cursor's agent-bridge protocol (read/shell/…) — this provider **never performs them and never lets them succeed** |
+| native exec | local tool-execution requests in Cursor's agent-bridge protocol (read/shell/…) — translatable cases become Pi `tool_call`s executed under Pi's permission system; untranslatable cases are rejected and never succeed locally (PROTOCOL-AGENT §5.1) |
 | fail-closed | any unrecognized/drifting wire behavior raises an error instead of guessing |
 
 ---
@@ -85,10 +85,16 @@ events reach pi frame by frame; interrupting (dispose) stops the stream.
 
 ### FR-2 Tool-execution boundary (audit)
 
-1. The provider **does not execute** any Cursor native local tool (read/shell/write/fetch/…); on
-   AgentService every such exec is a typed reject or a `throw`. The single exception is
-   `start_grind_planning_args` (a Cursor-side plan-mode UI toggle; answered with an empty success
-   ack, no local side effects — rationale in PROTOCOL-AGENT §5).
+1. The provider **does not execute** any Cursor native local tool (read/shell/write/fetch/…).
+   On AgentService, translatable native execs (shell/shellStream/read/write/delete/grep incl.
+   Glob) become regular Pi `tool_call`s — capability-matched against the registered tools,
+   never hardcoded — so Pi's permission system stays the execution authority (PROTOCOL-AGENT
+   §5.1); untranslatable cases (fetch, diagnostics, …) get a typed reject with a redirect, and
+   unknown arms get a `throw`. Two exceptions: `start_grind_planning_args` (a Cursor-side
+   plan-mode UI toggle; answered with an empty success ack, no local side effects — rationale
+   in PROTOCOL-AGENT §5), and `CURSOR_PROVIDER_NATIVE_EXEC=inproc`, a probe-only in-process
+   executor mode used to validate wire shapes against the live backend (never for real
+   sessions). This invariant's intent (no unaudited in-process execution) is unchanged.
 2. Tool calls flow one way only: the model returns tool calls via MCP/`tool_call_part` → pi executes
    → pi puts the toolResult into the next transcript (on AgentService, written back as `mcp_result`).
 3. The only processes the provider itself spawns are the documented host-identity commands

@@ -9,13 +9,16 @@ subscription. Two channels, selected explicitly and never silently switched:
 | **inference** | `aiserver.v1.InferenceService/RunInference` | opt-in via `CURSOR_PROVIDER_CHANNEL=inference`; requires the account entitlement |
 
 The defining property: **no local operation happens outside pi.** On the agentic channel the
-model and the conversation loop live on Cursor's side, but every Cursor native tool-execution
-request (shell, read, write, fetch, …) is rejected case by case by a completeness-tested audit
-table and answered with a redirect to the equivalent pi tool; pi's own tools are projected to
-the model as MCP tools (`provider_identifier=pi`) and executed under pi's permission system.
-Unknown protocol frames fail closed. Hosted capabilities Cursor offers (web search/fetch) run
-on Cursor's servers and are approved explicitly per query. On the inference channel there is
-no execution surface at all — pure model in, tokens out.
+model and the conversation loop live on Cursor's side, but Cursor native tool-execution requests
+(shell, read, write, delete, grep/Glob) are translated into ordinary pi tool calls —
+capability-matched against the tools pi actually registered, never hardcoded — and executed under
+pi's permission system; the result is encoded back into the native wire shape
+([docs/PROTOCOL-AGENT.md](docs/PROTOCOL-AGENT.md) §5.1). Pi's other tools are projected to the
+model as MCP tools (`provider_identifier=pi`). Native cases with no pi-side counterpart (fetch,
+diagnostics, …) are still rejected case by case with a redirect; unknown protocol frames fail
+closed. Hosted capabilities Cursor offers (web search/fetch) run on Cursor's servers and are
+approved explicitly per query. On the inference channel there is no execution surface at all —
+pure model in, tokens out.
 
 ## Why this exists
 
@@ -27,7 +30,7 @@ pi:
 | Concern | Where it lives |
 |---|---|
 | Conversation memory / resume | Pi session file (copy) + Cursor remote handle. Resume the remote conversation; rebuild from the Pi transcript only when stale. |
-| Tool execution | Pi tools + Pi permission system. Cursor native exec is rejected per case; no subprocess except documented host-identity commands. |
+| Tool execution | Pi tools + Pi permission system. Cursor native exec is translated to Pi tool calls (PROTOCOL-AGENT §5.1); untranslatable cases are rejected per case. No subprocess except documented host-identity commands. |
 | Credentials | Pi `auth.json` only (`/login cursor`, auto-refresh). |
 | Network | `https://api2.cursor.sh` (login, catalog, optional inference) and `https://agentn.*.api5.cursor.sh` (agent). Domain allowlist in code. |
 | Identity commands | Documented allowlist in `src/identity` (Linux prefers reading machine-id files). |

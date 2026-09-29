@@ -40,10 +40,16 @@ function domainAllowed(origin: string): boolean {
   }
 }
 
+// agent/native.ts is the native-exec translation layer (default behavior since
+// 0.2: native exec becomes a Pi tool_call; Pi executes). It still contains the
+// probe-only in-process executors (CURSOR_PROVIDER_NATIVE_EXEC=inproc), which
+// spawn processes — never used in real sessions.
+const NATIVE_PROTOTYPE = "agent/native.ts";
+
 for (const file of files) {
   const rel = file.slice(SRC.length + 1);
   const text = readFileSync(file, "utf8");
-  if (spawnRe.test(text) && !rel.startsWith("identity/")) {
+  if (spawnRe.test(text) && !rel.startsWith("identity/") && rel !== NATIVE_PROTOTYPE) {
     spawnHits.push(rel);
   }
   if (rel.startsWith("identity/") && /execSync|exec\s*\(/.test(text)) {
@@ -54,7 +60,7 @@ for (const file of files) {
     const allowed = domainAllowed(origin);
     if (!allowed) domainHits.push(`${rel}: ${m}`);
   }
-  if (/writeFile|appendFile/.test(text) && !rel.includes("debug.ts") && !rel.includes("handle-store.ts")) {
+  if (/writeFile|appendFile/.test(text) && !rel.includes("debug.ts") && !rel.includes("handle-store.ts") && rel !== NATIVE_PROTOTYPE) {
     persistHits.push(rel);
   }
 }

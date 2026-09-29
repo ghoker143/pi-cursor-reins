@@ -47,9 +47,11 @@ Allowlisted HTTPS hosts (NFR-4):
 | 1 | `run_request` | open a turn |
 | 2 | `exec_client_message` | typed exec result (reject / MCP result / request-context) |
 | 3 | `kv_client_message` | blob get/set reply |
-| 5 | `exec_client_control_message` | `throw` (field 2) for unknown exec |
+| 5 | `exec_client_control_message` | `throw` (2) for unknown exec; `stream_close` (1) terminates EVERY native exec reply; `heartbeat` (3) keeps a parked exec warm (§5.1) |
 | 6 | `interaction_response` | whitelist approve/reject |
 | 7 | `client_heartbeat` | empty keep-alive |
+
+`ExecClientControlMessage` oneof: `stream_close=1` `{id=1 uint32}`, `throw=2` `{id=1, error=2}`, `heartbeat=3` `{id=1}` (per-exec keep-alive for long runs; not yet needed — the run-level heartbeat covers the probe's short execs).
 
 Do not send `prewarm_request` or `conversation_action` except as nested inside `run_request`.
 
@@ -199,6 +201,21 @@ Reject reason (fixed prefix + `No operation was performed`): **intent-mapped and
 The miss budget is **8 per model turn** and counts every request that did **not** become a real Pi MCP tool call: a native-tool reject, an `unknown` exec arm, an `mcp_args` naming a tool the run never advertised, and a plan-mode ack (served, but still not a Pi tool call — counting it keeps the budget a true bound on unproductive requests). A real `mcpArgs` lift resets it — the model did the right thing. Below the budget the request is answered in-band; at the budget the run fails closed (loop guard) and `nextStep` names the ranked command tool. From `LOCAL_TOOL_ESCALATE_AFTER` (3) misses on, the redirect text hardens into a single imperative instruction. Rationale: the earlier gap — `unknown` and `mcp_not_found` replies never counted — allowed a run to spin forever on those two paths.
 
 `request_context` success: `RequestContext.env.workspace_paths` must equal `previous_workspace_uris`. `tools` = the same MCP list. No file contents, git, layouts.
+
+### §5.1 Native exec translation (default behavior)
+
+A native exec is translated to a regular Pi `tool_call` — capability-matched via `rankedTools`, never a hardcoded tool name — so Pi's permission system stays the execution authority; the Pi result is encoded back into the native shape on continuation. The reject path remains as the fallback for cases with no capable Pi tool and for untranslatable cases. `CURSOR_PROVIDER_NATIVE_EXEC=inproc` switches to probe-only in-process execution for wire validation (`tools/probe-native.ts --inproc`).
+
+Measured live 2026-09-29 (grok-4.7 / composer-2.5 / claude-4.5-sonnet). Field numbers cross-checked against two independent MIT-licensed reconstructions of the same wire surface.
+
+- **Every exec reply ends with `ExecClientControlMessage.stream_close{id}`** — single-result execs too, not just streams (this is what the reference client does). While a translated exec is parked on a Pi tool call, the provider sends `ExecClientHeartbeat{id}` every 3 s so a long Pi-side execution never trips a per-exec timeout.
+- **grok-4.7 shells via `shell_stream_args`** (field 14; same `ShellArgs` payload as field 2). `ShellArgs`: command=1, working_directory=2, timeout=3 (int32, unit unverified — decoded for debug, never translated), tool_call_id=4, description=15 (string, e.g. "Run echo command"). No `start` (4) event: sending one stalls the turn. `ShellResult.success` = 1 `{command=1, working_directory=2, exit_code=3, stdout=5, stderr=6, execution_time=7}` (failure = 2, same shape + `aborted=11`).
+- **Cursor's "Glob" is `grep_args` with an empty `pattern` and `glob` (field 3) set** (composer-2.5, claude-4.5-sonnet). The reconstructed proto's GrepArgs numbering disagrees with the live wire — decode by wire type, not assumed type. `GrepResult.success` = 1 `{pattern=1, path=2, output_mode=3, workspace_results=4 map<string,GrepUnionResult>}`; union `files=2` `{files=1, total_files=2}`, `content=3` `{matches=1 [{file=1, matches=2 [{line_number=1, content=2}]}], total_matched_lines=3}`.
+- **ReadArgs is `{path=1, tool_call_id=2}` — no offset/limit on the live wire.** `ReadResult.success` = 1 `{path=1, content=2, total_lines=3, file_size=4, truncated=6}`. `WriteResult.success` = 1 `{path=1, lines_created=2, file_size=3}`. `DeleteResult.success` = 1 `{path=1, deleted_file=2 (string — the path again), file_size=3, prev_content=4}`.
+- **Delete needs the real `file_size`**: a `DeleteResult.success` with `file_size` omitted (=0) is journaled by the backend (checkpoint + kv) but the turn then stalls forever; reporting the real pre-delete size completes it (the backend even echoes the size back to the model). `prev_content` is NOT required. Translation therefore runs a composite through the command tool — `sz=$(wc -c < PATH) && rm -- PATH && printf 'D0:%s\\n' "$sz"` — and the encoder reports the parsed size. `DeleteResult.success` = 1 `{path=1, deleted_file=2 (string — the path again), file_size=3, prev_content=4}`.
+- **KV `set_blob_args` may carry `blob_id` without `blob_data`** (a dedup reference, observed right after a Delete result): ack it with `SetBlobResult` like any write, store only when data is present. Fail-closing on it kills the turn.
+- **`ls_args` is live-unreachable**: no current model (grok-4.7, composer-2.5, claude-4.5-sonnet) is offered an LS tool; they use Glob or shell. `LsResult.success` = 1 `{directory_tree_root=1}`, node `{abs_path=1, children_dirs=2, children_files=3 {name=1}, children_were_processed=4, num_files=6}` (child dirs shallow) — per the reconstructed schema plus a second client's working shape, not live-verified.
+- **Resume + `mcp_tools`** (`tools/probe-resume.ts`): the backend retains the registration across resume requests, so the provider omits field 4 on resume when the persisted handle's `toolsetKey` matches the current set (changed set → re-send; `CURSOR_PROVIDER_RESEND_MCP_ON_RESUME=1` forces re-send). Changing the tool set mid-conversation, including calling a tool first declared on the resume request, works: the "MCP server pi does not exist" incident (session 01a0eb0e, 2026-09-29) did **not** reproduce from a plain tool-set change.
 
 ---
 

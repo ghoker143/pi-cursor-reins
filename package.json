@@ -1,6 +1,6 @@
 {
   "name": "pi-cursor-reins",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Cursor provider for pi: fully Pi-owned tool execution (no Cursor-side exec, audited) using your Cursor subscription quota. AgentService channel by default, optional RunInference.",
   "type": "module",
   "license": "AGPL-3.0-or-later",
