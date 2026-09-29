@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/).
 
+## 0.2.1 — 2026-09-30
+
+- **Fixed: tools registered mid-run were uncallable for the rest of the Run.** The exec
+  dispatch gate checked only the `mcp_tools` catalog frozen at Run open, but Pi's tool
+  registry can change mid-run — a gate tool (`web_enable` & co.) registers more tools
+  after it executes, and the next continuation already refreshes `run.ir`. Cursor
+  forwards unregistered tool names straight to exec (it does not validate against the
+  run-request catalog), so the model's direct calls reached the provider and bounced as
+  `mcp_not_found`: in session 01a0ede5 (2026-09-29) every `mcp_pi_web_search` call failed
+  this way until the model fell back to Cursor's hosted webSearch. The gate now checks
+  the advertised catalog **plus** the live registry (`run.ir.tools`), so a tool enabled
+  mid-run lifts in the same Run. Genuinely unknown names still get the capability-ranked
+  `mcp_not_found` alternatives and count against the miss budget only when absent from
+  both sets. `mcpToolsOf` maps `ir.tools` 1:1, so the union can never unlock a tool the
+  provider meant to withhold. Regression test drives the full gate → continuation →
+  unadvertised-call sequence.
+
 ## 0.2.0 — 2026-09-29
 
 - **Fixed: `not_found` for constructed model ids.** `requested_model.model_id` was the

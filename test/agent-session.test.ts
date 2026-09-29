@@ -304,6 +304,71 @@ test("T-AGENT-SESSION: mcpArgs lifts to Pi toolCall and mcp_result continues the
   }
 });
 
+test("T-AGENT-SESSION: a tool registered mid-run (absent from the Run catalog) still executes", async () => {
+  __resetAgentRunsForTests();
+  const fake = await listen();
+  let phase: "gate" | "search" | "done" = "gate";
+  fake.onStream((stream) => {
+    stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+    const decoder = new ConnectFrameDecoder();
+    stream.on("data", (chunk: Uint8Array) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.endOfStream) continue;
+        // Run request → the model first calls the gate tool.
+        if (phase === "gate") {
+          writeProto(stream, mcpArgsFrame("mcp_pi_web_enable", "call-1", {}));
+          writeProto(stream, turnEnded());
+          phase = "search";
+          return;
+        }
+        // Continuation: Pi executed web_enable (registry gained web_search) and
+        // the refreshed ir carries the larger tool set. The model now calls the
+        // newly registered tool under its mcp_pi_ id — never advertised on this Run.
+        if (phase === "search") {
+          const msg = decodeAgentServerMessage(frame.body);
+          assert.notEqual(msg.case, "unknown");
+          writeProto(stream, mcpArgsFrame("mcp_pi_web_search", "call-2", { query: "rust agents" }));
+          writeProto(stream, turnEnded());
+          writeTrailer(stream);
+          phase = "done";
+        }
+      }
+    });
+  });
+
+  try {
+    const gateTools = [{ name: "web_enable", description: "enable web tools", jsonSchema: { type: "object" } }];
+    const first = await runAgentSession({ token: "tok", ir: ir({ tools: gateTools }), origin: fake.origin });
+    const gateCall = first.events.find((e) => e.type === "tool_call");
+    assert.ok(gateCall && gateCall.type === "tool_call");
+    assert.equal(gateCall.name, "web_enable");
+
+    const second = await runAgentSession({
+      token: "tok",
+      origin: fake.origin,
+      ir: ir({
+        tools: [
+          ...gateTools,
+          { name: "web_search", description: "search the web", jsonSchema: { type: "object", properties: { query: { type: "string" } } } },
+        ],
+        messages: [
+          { role: "user", text: "ping" },
+          { role: "assistant", toolCalls: [{ id: "call-1", name: "web_enable", arguments: {} }] },
+          { role: "tool", toolResult: { toolCallId: "call-1", toolName: "web_enable", result: "enabled", isError: false } },
+        ],
+      }),
+    });
+    const call = second.events.find((e) => e.type === "tool_call" && e.name === "web_search");
+    assert.ok(call && call.type === "tool_call", "mid-run registered tool must lift, not bounce as tool_not_found");
+    assert.equal(call.id, "call-2");
+    const done = second.events.find((e) => e.type === "done");
+    assert.equal(done && done.type === "done" ? done.stopReason : "", "toolUse");
+  } finally {
+    fake.server.close();
+    __resetAgentRunsForTests();
+  }
+});
+
 test("T-AGENT-SESSION: resumed turn without a fresh checkpoint keeps the previous handle", async () => {
   __resetAgentRunsForTests();
   const fake = await listen();

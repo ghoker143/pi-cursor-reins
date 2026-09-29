@@ -127,7 +127,7 @@ export function agentOrigin(env: NodeJS.ProcessEnv = process.env): string {
   return assertAllowedOrigin(raw && raw !== "" ? raw : CURSOR_AGENT_ORIGIN).origin;
 }
 
-function toolNames(tools: McpToolWire[]): string[] {
+function toolNames(tools: ReadonlyArray<{ name: string }>): string[] {
   return tools.map((t) => t.name);
 }
 
@@ -507,7 +507,13 @@ async function handleExec(run: ActiveRun, exec: DecodedExec): Promise<void> {
   if (decision.action === "mcp") {
     const raw = exec.mcp?.toolName || exec.mcp?.name || "";
     const name = stripCursorMcpToolName(raw);
-    const available = toolNames(run.tools);
+    // The advertised mcp_tools catalog is frozen at Run open — the protocol has no
+    // mid-run update (PROTOCOL-AGENT §5.1) — but Pi's tool registry may change
+    // mid-run: a gate tool (web_enable & co.) registers more tools, and the next
+    // continuation refreshes run.ir. Cursor forwards unregistered names straight
+    // to exec, so consult the live registry view too; without it a tool enabled
+    // mid-run stays uncallable for the rest of the Run (session 01a0ede5).
+    const available = [...new Set([...toolNames(run.tools), ...toolNames(run.ir.tools)])];
     if (!name || !available.includes(name)) {
       noteLocalMiss(run, "mcp_not_found", "tool_not_found", { requested: name });
       await run.bidi.write(
