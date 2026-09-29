@@ -22,10 +22,18 @@ All notable changes to this project are documented in this file. Format follows
 - **Resume omits `mcp_tools`** when the conversation handle's `toolsetKey` matches the current
   tool set (registration persists server-side, wire-verified); a changed set is re-sent
   automatically. `CURSOR_PROVIDER_RESEND_MCP_ON_RESUME=1` restores unconditional re-send.
+- **MCP contract in the rules**: Cursor never shows MCP tool descriptions/schemas to the model
+  (probe-fidelity: markers absent on fresh runs and resumes, both grok-4.7 and composer-2.5), so
+  pi-only tools — those not covered by native translation — get a one-line signature contract in
+  the root rules (`mcpContractText`); probe-contract shows exact-argument calls, nested schemas
+  included, guided by that contract alone.
 - Probes: `tools/probe-native.ts` (native exec scenarios, drives the Pi side of translated calls),
   `tools/probe-resume.ts` (resume/mcp_tools matrix), `tools/probe-long.ts` (20-turn
   long-conversation compliance), `tools/probe-injection.ts` (server-side tool harness
-  visibility) against the live backend.
+  visibility), `tools/probe-fidelity.ts` (description/rules delivery), `tools/probe-contract.ts`
+  (rules-carried contract), `tools/probe-edge.ts` (quoting/exit codes/missing files/unicode/
+  spacey names/long commands/big output), `tools/probe-realworld.ts` (multi-step project task)
+  against the live backend.
 
 ## 0.1.1 — 2026-09-28
 

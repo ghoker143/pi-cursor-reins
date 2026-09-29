@@ -120,6 +120,45 @@ export function matchToolFor(execCase: string, tools: IrTool[]): IrTool | undefi
   return best !== undefined && best.s > 0 ? best.tool : undefined;
 }
 
+/** Exec cases the native translation layer serves (PROTOCOL-AGENT §5.1). */
+const NATIVE_COVERED_CASES = ["shellArgs", "readArgs", "writeArgs", "grepArgs"] as const;
+
+/**
+ * Compact, rules-carried contract for the Pi tools that native translation does
+ * NOT cover. Measured live 2026-09-29 (probe-fidelity.ts): MCP tool
+ * descriptions/schemas never reach the model — GetDynamicTools shows names at
+ * best — while the client rules arrive verbatim; and probe-contract.ts shows a
+ * one-line signature in the rules is enough for exact-argument calls. Tools a
+ * native exec already routes to are omitted (the model's built-in tools cover
+ * them); everything else gets one line. This replaces the old full policy text.
+ */
+export function mcpContractText(tools: IrTool[]): string {
+  const covered = new Set(
+    NATIVE_COVERED_CASES.map((c) => matchToolFor(c, tools)).filter((t) => t !== undefined),
+  );
+  const extras = tools.filter((t) => !covered.has(t));
+  if (extras.length === 0) return "";
+  const lines = [
+    'Pi tools run on the host. Call them with CallDynamicTool (namespace "pi", model-facing id `mcp_pi_<name>`).',
+    "Their schemas do not appear in your tool listing; use these signatures directly:",
+  ];
+  for (const tool of extras.slice(0, 24)) {
+    const schema = tool.jsonSchema as { properties?: Record<string, { type?: string }>; required?: unknown };
+    const props = Object.keys(schema.properties ?? {});
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    const params = props
+      .slice(0, 6)
+      .map((p) => `${p}${required.includes(p) ? "" : "?"}`)
+      .join(", ");
+    const desc = tool.description.split("\n")[0]?.slice(0, 100) ?? "";
+    lines.push(`- ${cursorMcpToolName(tool.name)}(${params})${desc === "" ? "" : ` — ${desc}`}`);
+  }
+  lines.push(
+    "Local shell/read/write/grep needs are already covered by your built-in tools; they execute through Pi.",
+  );
+  return lines.join("\n");
+}
+
 /** Best tool for running commands, for loop-guard and policy hints. */
 export function bestCommandTool(tools: IrTool[]): IrTool | undefined {
   return rankedTools("shellArgs", tools)[0];

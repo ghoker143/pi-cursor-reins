@@ -14,7 +14,7 @@ import {
   type McpToolWire,
 } from "../proto/agent.ts";
 import { BlobStore } from "./blob-store.ts";
-import { buildRootPromptMessages, encodeRootPromptMessage, splitCurrentUser, systemPromptRootMessage } from "./root-prompt.ts";
+import { buildRootPromptMessages, composeRules, encodeRootPromptMessage, splitCurrentUser, systemPromptRootMessage } from "./root-prompt.ts";
 import { toWireImages } from "./images.ts";
 import type { ConversationHandle } from "./handle-store.ts";
 import { blobsIntoStore, toolsetKeyOf } from "./handle-store.ts";
@@ -61,7 +61,7 @@ export function buildAgentRequest(
     resume.toolsetKey === toolsetKeyOf(tools);
   if (resume) blobsIntoStore(store, resume.blobs);
   const prompt = resume
-    ? [systemPromptRootMessage(ir.systemPrompt)]
+    ? [systemPromptRootMessage(composeRules(ir))]
     : buildRootPromptMessages(ir, history);
   const promptIds = prompt.map((m) => store.put(encodeRootPromptMessage(m)));
   const selected = store.put(encodeSelectedContextBlob(promptIds, "pi"));

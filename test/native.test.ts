@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildAgentRequest } from "../src/agent/request.ts";
+import { mcpContractText } from "../src/agent/policy.ts";
 import {
   decodeNativeArgs,
   encodeNativeResultFromPi,
@@ -30,13 +31,35 @@ function execOf(execCase: DecodedExec["case"], field: number, payload: Uint8Arra
   return { id: 7, execId: "e1", field, case: execCase, strings: {}, payload };
 }
 
-function tool(name: string, description: string, properties: Record<string, unknown>): IrTool {
-  return { name, description, jsonSchema: { type: "object", properties } };
+function tool(name: string, description: string, properties: Record<string, unknown>, required: string[] = []): IrTool {
+  return { name, description, jsonSchema: { type: "object", properties, required } };
 }
 
 const ctxShell = tool("ctx_shell", "Run a shell command", { command: { type: "string" }, timeout: { type: "number" } });
 const readTool = tool("read", "Read a file", { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } });
 const findTool = tool("fffind", "Find files by name pattern", { pattern: { type: "string" }, path: { type: "string" } });
+
+test("T-NATIVE: mcpContractText lists only tools native translation cannot cover", () => {
+  const dice = tool("roll_dice", "Roll dice and return the total.", {
+    sides: { type: "number" },
+    count: { type: "number" },
+  }, ["sides", "count"]);
+  const askTool = tool("ask_user_question", "Ask the user.\nSecond line is dropped.", {
+    questions: { type: "array" },
+    note: { type: "string" },
+  }, ["questions"]);
+  const all = [ctxShell, readTool, findTool, dice, askTool];
+  const text = mcpContractText(all);
+  // Core-capable tools are covered by native translation → excluded.
+  assert.ok(!text.includes("ctx_shell"), "shell winner excluded");
+  assert.ok(!text.includes("mcp_pi_read("), "read winner excluded");
+  // Pi-only extras get a one-line signature each.
+  assert.match(text, /mcp_pi_roll_dice\(sides, count\) — Roll dice and return the total\./);
+  assert.match(text, /mcp_pi_ask_user_question\(questions, note\?\) — Ask the user\./);
+  assert.match(text, /namespace "pi"/);
+  // No extras → no contract at all.
+  assert.equal(mcpContractText([ctxShell, readTool]), "");
+});
 
 test("T-NATIVE: mode env parsing", () => {
   assert.equal(nativeExecMode({}), "pi", "translation is the default");

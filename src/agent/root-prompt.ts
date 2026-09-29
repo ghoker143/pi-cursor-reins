@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { MAX_REPLAYED_TOOL_RESULT_CHARS } from "../constants.ts";
 import type { InferenceIR, IrImage, IrMessage } from "../session/ir.ts";
-import { cursorMcpToolName } from "./policy.ts";
+import { cursorMcpToolName, mcpContractText } from "./policy.ts";
 
 export interface RootPromptTextPart {
   type: "text";
@@ -94,8 +94,17 @@ export function trailingToolResults(
   return out;
 }
 
+/** Rules for the root prompt: pi's system prompt plus the compact contract for
+ * Pi-only tools (their schemas never reach the model — PROTOCOL-AGENT §5.1). */
+export function composeRules(ir: InferenceIR): string {
+  const contract = mcpContractText(ir.tools);
+  const sys = ir.systemPrompt.trim();
+  if (contract === "") return ir.systemPrompt;
+  return sys === "" ? contract : `${ir.systemPrompt}\n\n${contract}`;
+}
+
 export function buildRootPromptMessages(ir: InferenceIR, history: IrMessage[]): RootPromptMessage[] {
-  const rules = ir.systemPrompt;
+  const rules = composeRules(ir);
   const messages: RootPromptMessage[] = [];
   if (rules.trim()) messages.push(systemPromptRootMessage(rules));
 
