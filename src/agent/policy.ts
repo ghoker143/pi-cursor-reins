@@ -140,7 +140,8 @@ export function mcpContractText(tools: IrTool[]): string {
   if (extras.length === 0) return "";
   const lines = [
     'Pi tools run on the host. Call them with CallDynamicTool (namespace "pi", model-facing id `mcp_pi_<name>`).',
-    "Their schemas do not appear in your tool listing; use these signatures directly:",
+    "Their schemas do not appear in your tool listing; use these signatures directly.",
+    "These tools are callable by name only — they are NOT on the filesystem; never search for them.",
   ];
   for (const tool of extras.slice(0, 24)) {
     const schema = tool.jsonSchema as { properties?: Record<string, { type?: string }>; required?: unknown };
