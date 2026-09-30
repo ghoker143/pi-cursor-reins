@@ -3,12 +3,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildAgentRequest } from "../src/agent/request.ts";
-import { mcpContractText } from "../src/agent/policy.ts";
+import { mcpContractText, matchToolFor } from "../src/agent/policy.ts";
 import {
   decodeNativeArgs,
   encodeNativeResultFromPi,
   nativeExecMode,
   translateNativeToPi,
+  unwrapCodemodeResult,
   type NativeArgs,
 } from "../src/agent/native.ts";
 import type { DecodedExec } from "../src/proto/agent.ts";
@@ -139,8 +140,15 @@ test("T-NATIVE: shell translates to the capability-matched command tool, schema-
   const hit = translateNativeToPi(args, [ctxShell]);
   assert.ok(hit);
   assert.equal(hit.tool.name, "ctx_shell");
-  // timeout is dropped (wire unit unverified); cwd dropped (no schema key).
-  assert.deepEqual(hit.args, { command: "echo hi" });
+  // timeout is dropped (wire unit unverified). pi 0.99 bash has no cwd, so wrap it.
+  assert.deepEqual(hit.args, { command: "cd -- '/tmp' && echo hi" });
+
+  const withCwd = tool("ctx_shell", "Run a shell command", {
+    command: { type: "string" },
+    cwd: { type: "string" },
+  });
+  const hitCwd = translateNativeToPi(args, [withCwd]);
+  assert.deepEqual(hitCwd?.args, { command: "echo hi", cwd: "/tmp" });
 
   // A tool with no command-ish key can never serve a shell exec.
   assert.equal(translateNativeToPi(args, [tool("echo", "echo", { x: { type: "string" } })]), null);
@@ -352,4 +360,81 @@ test("T-NATIVE: resume omits mcp_tools when the tool set is unchanged, re-sends 
     if (prev === undefined) delete process.env.CURSOR_PROVIDER_RESEND_MCP_ON_RESUME;
     else process.env.CURSOR_PROVIDER_RESEND_MCP_ON_RESUME = prev;
   }
+});
+
+const codeMode = tool(
+  "codemode",
+  "Run JavaScript that calls bash, shell, read, write, grep, and find tools",
+  { code: { type: "string" } },
+  ["code"],
+);
+
+test("T-NATIVE: declared bash wins over codemode; only-mode synthesizes a { code } script", () => {
+  const args: NativeArgs = { case: "shellArgs", command: "echo hi", workingDirectory: "/tmp", timeoutMs: 0 };
+  const both = translateNativeToPi(args, [ctxShell, codeMode]);
+  assert.equal(both?.tool.name, "ctx_shell");
+  assert.equal("code" in (both?.args ?? {}), false);
+  assert.equal(matchToolFor("shellArgs", [codeMode]), undefined, "codemode never matches as a command tool");
+
+  const only = translateNativeToPi(args, [codeMode]);
+  assert.equal(only?.tool.name, "codemode");
+  const script = String(only?.args.code);
+  assert.match(script, /tools\.bash/);
+  assert.match(script, /cd -- '\/tmp' && echo hi/);
+
+  const read = translateNativeToPi({ case: "readArgs", path: "a.txt" }, [codeMode]);
+  assert.equal(read?.tool.name, "codemode");
+  assert.match(String(read?.args.code), /tools\.read\(\{ path: "a.txt" \}\)/);
+
+  const write = translateNativeToPi({ case: "writeArgs", path: "b.txt", contents: "body" }, [codeMode]);
+  assert.match(String(write?.args.code), /tools\.write/);
+
+  const del = translateNativeToPi({ case: "deleteArgs", path: "gone.txt" }, [codeMode]);
+  assert.match(String(del?.args.code), /tools\.bash/);
+  assert.match(String(del?.args.code), /D0:%s/);
+
+  const grep = translateNativeToPi(
+    { case: "grepArgs", pattern: "needle", glob: "*.ts", path: "/src", caseInsensitive: true, outputMode: "content" },
+    [codeMode],
+  );
+  assert.match(String(grep?.args.code), /tools\.grep/);
+  assert.match(String(grep?.args.code), /ignoreCase/);
+
+  const glob = translateNativeToPi(
+    { case: "grepArgs", pattern: "", glob: "**/*.ts", path: "/src", caseInsensitive: false, outputMode: "files_with_matches" },
+    [codeMode],
+  );
+  assert.match(String(glob?.args.code), /tools\.find/);
+});
+
+test("T-NATIVE: unwrapCodemodeResult strips the script header and marks failed scripts", () => {
+  const ok = unwrapCodemodeResult("Script completed\nWall time 0.1 seconds\nOutput:\nhi\n", false);
+  assert.equal(ok.text, "hi\n");
+  assert.equal(ok.isError, false);
+  const fail = unwrapCodemodeResult("Script failed\nWall time 1.2 seconds\nOutput:\nboom", false);
+  assert.equal(fail.text, "boom");
+  assert.equal(fail.isError, true);
+  const plain = unwrapCodemodeResult("hi\n", false);
+  assert.deepEqual(plain, { text: "hi\n", isError: false });
+
+  const args: NativeArgs = { case: "shellArgs", command: "echo hi", workingDirectory: "", timeoutMs: 0 };
+  const reply = encodeNativeResultFromPi(args, "Script completed\nWall time 0.1 seconds\nOutput:\nhi\n", false);
+  let stdout = "";
+  forEachField(reply.frames[0]?.resultBytes ?? new Uint8Array(), (field, wire, reader) => {
+    if (field === 1) {
+      forEachField(expectBytes(reader, wire), (f2, w2, r2) => {
+        if (f2 === 5) stdout = expectString(r2, w2);
+        else skipUnknown(r2, w2, f2);
+      });
+    } else skipUnknown(reader, wire, field);
+  });
+  assert.equal(stdout, "hi\n");
+
+  const bad = encodeNativeResultFromPi(args, "Script failed\nWall time 0.0 seconds\nOutput:\nboom", false);
+  let arm = 0;
+  forEachField(bad.frames[0]?.resultBytes ?? new Uint8Array(), (field, wire, reader) => {
+    arm = field;
+    skipUnknown(reader, wire, field);
+  });
+  assert.equal(arm, 2, "failed script header maps to the native error arm");
 });

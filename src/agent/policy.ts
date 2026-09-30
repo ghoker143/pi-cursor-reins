@@ -79,6 +79,20 @@ export function schemaProperties(tool: IrTool): string[] {
   return Object.keys((tool.jsonSchema as { properties?: Record<string, unknown> })?.properties ?? {});
 }
 
+/** pi 0.99 `codemode`: `{ code }` scripts that call other tools. Description mentions bash/shell. */
+export function isCodemodeTool(tool: IrTool): boolean {
+  return tool.name === "codemode" && schemaProperties(tool).some((k) => k.toLowerCase() === "code");
+}
+
+/** pi 0.99 `tool_search`: loads deferred tools; not an executor. */
+function isToolSearchTool(tool: IrTool): boolean {
+  return tool.name === "tool_search";
+}
+
+function isNativeMetaTool(tool: IrTool): boolean {
+  return isCodemodeTool(tool) || isToolSearchTool(tool);
+}
+
 interface RankedRow {
   tool: IrTool;
   index: number;
@@ -90,6 +104,8 @@ function scoredTools(execCase: string, tools: IrTool[]): RankedRow[] {
   const fragments = CAPABILITY_FRAGMENTS[execCase] ?? [];
   const commandIntent = COMMAND_INTENT_CASES.has(execCase);
   const score = (tool: IrTool): number => {
+    // Descriptions mention bash/read/write; never steal a native Shell/Read/Write match.
+    if (isNativeMetaTool(tool)) return 0;
     if (hints.includes(tool.name)) return 4000;
     const nameHit = fragments.findIndex((f) => tool.name.toLowerCase().includes(f));
     if (nameHit !== -1) return 3000 - nameHit;
@@ -132,37 +148,56 @@ const NATIVE_COVERED_CASES = ["shellArgs", "readArgs", "writeArgs", "grepArgs"] 
  * native exec already routes to are omitted (the model's built-in tools cover
  * them); everything else gets one line. This replaces the old full policy text.
  */
+const CODEMODE_CONTRACT =
+  "mcp_pi_codemode(code) — Run JavaScript that calls other tools via tools.<name>(args) and text()/exit(). " +
+  "Hidden builtins stay callable: tools.bash({command}), tools.read({path}), tools.write({path, content}), tools.edit(...), " +
+  "tools.grep({pattern, path?, glob?, ignoreCase?}), tools.find({pattern}), tools.ls({path?}). Nested calls go through Pi permissions.";
+
+function extraContractLine(tool: IrTool): string {
+  if (isCodemodeTool(tool)) return `- ${CODEMODE_CONTRACT}`;
+  const schema = tool.jsonSchema as { properties?: Record<string, { type?: string }>; required?: unknown };
+  const props = Object.keys(schema.properties ?? {});
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const params = props
+    .slice(0, 6)
+    .map((p) => `${p}${required.includes(p) ? "" : "?"}`)
+    .join(", ");
+  const desc = tool.description.split("\n")[0]?.slice(0, 100) ?? "";
+  return `- ${cursorMcpToolName(tool.name)}(${params})${desc === "" ? "" : ` — ${desc}`}`;
+}
+
 export function mcpContractText(tools: IrTool[]): string {
   const covered = new Set(
     NATIVE_COVERED_CASES.map((c) => matchToolFor(c, tools)).filter((t) => t !== undefined),
   );
   const extras = tools.filter((t) => !covered.has(t));
   if (extras.length === 0) return "";
+  const pinned = extras.filter(isCodemodeTool);
+  const rest = extras.filter((t) => !isCodemodeTool(t));
+  const listed = [...pinned, ...rest.slice(0, Math.max(0, 24 - pinned.length))];
   const lines = [
     'Pi tools run on the host. Call them with CallDynamicTool (namespace "pi", model-facing id `mcp_pi_<name>`).',
     "Their schemas do not appear in your tool listing; use these signatures directly.",
     "These tools are callable by name only — they are NOT on the filesystem; never search for them.",
-  ];
-  for (const tool of extras.slice(0, 24)) {
-    const schema = tool.jsonSchema as { properties?: Record<string, { type?: string }>; required?: unknown };
-    const props = Object.keys(schema.properties ?? {});
-    const required = Array.isArray(schema.required) ? schema.required : [];
-    const params = props
-      .slice(0, 6)
-      .map((p) => `${p}${required.includes(p) ? "" : "?"}`)
-      .join(", ");
-    const desc = tool.description.split("\n")[0]?.slice(0, 100) ?? "";
-    lines.push(`- ${cursorMcpToolName(tool.name)}(${params})${desc === "" ? "" : ` — ${desc}`}`);
-  }
-  lines.push(
+    ...listed.map(extraContractLine),
     "Local shell/read/write/grep needs are already covered by your built-in tools; they execute through Pi.",
-  );
+  ];
   return lines.join("\n");
+}
+
+/** Hint ranking for rejects / loop-guard: capability hits, then codemode, then any non-meta. */
+function hintToolsFor(execCase: string, tools: IrTool[]): IrTool[] {
+  const rows = scoredTools(execCase, tools);
+  const hits = rows.filter((row) => !isNativeMetaTool(row.tool) && row.s > 0).map((row) => row.tool);
+  if (hits.length > 0) return hits;
+  const cm = tools.filter(isCodemodeTool);
+  if (cm.length > 0) return cm;
+  return rows.filter((row) => !isNativeMetaTool(row.tool)).map((row) => row.tool);
 }
 
 /** Best tool for running commands, for loop-guard and policy hints. */
 export function bestCommandTool(tools: IrTool[]): IrTool | undefined {
-  return rankedTools("shellArgs", tools)[0];
+  return hintToolsFor("shellArgs", tools)[0];
 }
 
 /**
@@ -205,7 +240,7 @@ export function unknownExecThrowMessage(execCase: string, tools: IrTool[]): stri
 /** A concrete argument example derived from the tool's own JSON schema. */
 function argHintFor(tool: IrTool, detail: string): string {
   const props = Object.keys((tool.jsonSchema as { properties?: Record<string, unknown> })?.properties ?? {});
-  const key = ["command", "path", "pattern", "url", "query", "script"].find((k) => props.includes(k));
+  const key = ["command", "path", "pattern", "url", "query", "script", "code"].find((k) => props.includes(k));
   if (!key) return " with the original request as arguments";
   // Even without a concrete value (the native frame carried none) name the parameter:
   // a model that cannot see the tool schema otherwise calls the tool bare and pi's own
@@ -230,8 +265,7 @@ export function rejectReason(execCase: string, tools: IrTool[], detail = "", esc
   if (tools.length === 0) {
     return `${NATIVE_EXEC_REJECT} No Pi MCP tools are exposed for this request, so this cannot be performed.`;
   }
-  const ranked = rankedTools(execCase, tools);
-  const [best, ...others] = ranked;
+  const [best, ...others] = hintToolsFor(execCase, tools);
   if (!best) return `${NATIVE_EXEC_REJECT} No Pi MCP tools are exposed for this request, so this cannot be performed.`;
   const bestName = cursorMcpToolName(best.name);
   const example = argHintFor(best, detail);

@@ -88,7 +88,7 @@ test("T-COMPAT: catalog-carrying rows send the published level slug as model_id"
   assert.equal(irOff.modelId, "composer-2.5", "no default slug → the off level's published id");
 });
 
-test("T-COMPAT: pi 0.87 system+tools live on system messages", () => {
+test("T-COMPAT: pi 0.99 system+tools live on system messages", () => {
   const ir = transcriptToIr(
     ctx([
       {

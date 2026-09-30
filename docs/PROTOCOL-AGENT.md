@@ -204,7 +204,7 @@ The miss budget is **8 per model turn** and counts every request that did **not*
 
 ### §5.1 Native exec translation (default behavior)
 
-A native exec is translated to a regular Pi `tool_call` — capability-matched via `rankedTools`, never a hardcoded tool name — so Pi's permission system stays the execution authority; the Pi result is encoded back into the native shape on continuation. The reject path remains as the fallback for cases with no capable Pi tool and for untranslatable cases. `CURSOR_PROVIDER_NATIVE_EXEC=inproc` switches to probe-only in-process execution for wire validation (`tools/probe-native.ts --inproc`).
+A native exec is translated to a regular Pi `tool_call` — capability-matched via `rankedTools`, never a hardcoded tool name — so Pi's permission system stays the execution authority; the Pi result is encoded back into the native shape on continuation. The reject path remains as the fallback for cases with no capable Pi tool and for untranslatable cases. When declared bash/read/write are hidden (`codemode.mode=only`), the same translatable execs synthesize a `codemode` `{ code }` script (`tools.bash` / `tools.read` / …); `codemode` itself scores 0 in capability matching so its description cannot steal a native Shell/Read/Write match. Results unwrap the `Script completed|failed` header. `CURSOR_PROVIDER_NATIVE_EXEC=inproc` switches to probe-only in-process execution for wire validation (`tools/probe-native.ts --inproc`).
 
 Measured live 2026-09-29 (grok-4.7 / composer-2.5 / claude-4.5-sonnet). Field numbers cross-checked against two independent MIT-licensed reconstructions of the same wire surface.
 

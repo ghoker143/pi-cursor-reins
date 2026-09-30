@@ -921,6 +921,74 @@ test("T-AGENT-SESSION: native shell lifts to the matched Pi tool; continuation e
   }
 });
 
+const CODEMODE_TOOL = {
+  name: "codemode",
+  description: "Run JavaScript that calls bash, shell, read, write tools",
+  jsonSchema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] },
+};
+
+test("T-AGENT-SESSION: only-mode native shell lifts to a codemode script; header unwraps", async () => {
+  __resetAgentRunsForTests();
+  const fake = await listen();
+  let phase: "await-run" | "await-result" | "done" = "await-run";
+  const replies: { id: number; resultField: number; text: string }[] = [];
+  fake.onStream((stream) => {
+    stream.respond({ ":status": 200, "content-type": "application/connect+proto" });
+    const decoder = new ConnectFrameDecoder();
+    stream.on("data", (chunk: Uint8Array) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.endOfStream) continue;
+        if (phase === "await-run") {
+          phase = "await-result";
+          writeProto(stream, shellArgsFrame("echo hi", 42));
+          return;
+        }
+        if (phase === "await-result") {
+          const shape = execReplyShape(frame.body);
+          if (shape) replies.push(shape);
+          if (isStreamClose(frame.body)) {
+            writeProto(stream, textDelta("ran it"));
+            writeProto(stream, turnEnded());
+            writeTrailer(stream);
+            phase = "done";
+          }
+        }
+      }
+    });
+  });
+  try {
+    const irOnly = (messages: InferenceIR["messages"]): InferenceIR =>
+      ir({ sessionId: "sess-cm", tools: [CODEMODE_TOOL], messages });
+    const first = await runAgentSession({ token: "tok", ir: irOnly([{ role: "user", text: "ping" }]), origin: fake.origin });
+    const call = first.events.find((e) => e.type === "tool_call");
+    assert.ok(call && call.type === "tool_call");
+    const args = call.arguments ?? {};
+    assert.equal(call.name, "codemode");
+    assert.equal(typeof args.code, "string");
+    assert.match(String(args.code), /tools\.bash/);
+    assert.match(String(args.code), /echo hi/);
+
+    const header = "Script completed\nWall time 0.1 seconds\nOutput:\nhi\n";
+    const second = await runAgentSession({
+      token: "tok",
+      ir: irOnly([
+        { role: "user", text: "ping" },
+        { role: "assistant", toolCalls: [{ id: call.id, name: "codemode", arguments: args }] },
+        { role: "tool", toolResult: { toolCallId: call.id, toolName: "codemode", result: header, isError: false } },
+      ]),
+      origin: fake.origin,
+    });
+    assert.equal(second.events.some((e) => e.type === "text" && e.delta === "ran it"), true);
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0]?.id, 42);
+    assert.ok(replies[0]?.text.includes("hi\n"), "unwrapped script body lands in the native success shape");
+    assert.equal(replies[0]?.text.includes("Script completed"), false, "header must not leak into the native result");
+  } finally {
+    fake.server.close();
+    __resetAgentRunsForTests();
+  }
+});
+
 test("T-AGENT-SESSION: a parallel lift landing after the burst window is re-yielded, never starved", async () => {
   __resetAgentRunsForTests();
   const fake = await listen();

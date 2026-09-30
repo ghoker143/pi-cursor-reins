@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-/** pi 0.87: TranscriptContext.messages carry system prompt + tools. */
+/** pi 0.99: TranscriptContext.messages carry system prompt + tools. */
 import {
   getCurrentSystemPrompt,
   getCurrentTools,
@@ -21,7 +21,7 @@ function textOf(content: string | { type: string; text?: string }[]): string {
   return content.flatMap((p) => (p.type === "text" && p.text ? [p.text] : [])).join("");
 }
 
-/** pi 0.87: ImageContent is `{ type:"image", data, mimeType }`. */
+/** pi 0.99: ImageContent is `{ type:"image", data, mimeType }`. */
 function imagesOf(content: unknown, where: string): IrImage[] {
   if (!Array.isArray(content)) return [];
   const images: IrImage[] = [];

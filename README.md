@@ -67,7 +67,7 @@ Headless: `pi -p --model cursor/<id> "…"`. Try `cursor/composer-2.5`, `cursor/
 
 ## Compatibility
 
-Tested host: **pi 0.87.x** (peer range is deliberately narrow; widen only after live testing).
+Tested host: **pi 0.99.x** (peer range is deliberately narrow; widen only after live testing).
 Node ≥ 22. No build step: pi loads `src/index.ts` via jiti.
 
 This is an independent, unofficial implementation. It is not affiliated with Cursor, and Cursor may
@@ -87,12 +87,17 @@ a crashed Pi side cannot leak the stream.
 
 If `pi -p` stays alive after the answer, that is another installed package holding the event loop.
 This provider has already destroyed the AgentService stream. Confirm with
-`pi -p --no-extensions -e <this-package> …`.
+`pi -p --no-extensions -e <this-package> …`. On pi 0.99 `--no-extensions` also disables builtins
+(mcp, llama.cpp, codemode).
+
+When Pi hides declared bash/read/write (`codemode.mode=only`), native Shell/Read/Write/Grep still
+execute: the provider synthesizes a `codemode` `{ code }` script. Default (`mode=on`) keeps the
+direct declared-tool path.
 
 ## Development
 
 ```sh
-npm test        # 84 tests, no network
+npm test        # offline tests, no network
 npm run typecheck
 npm run audit   # spawn whitelist / egress domains / persistence inventory
 ```

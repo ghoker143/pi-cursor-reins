@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EXEC_CASES, EXEC_FIELD, encodeKvGetResult, encodeMcpSuccess, encodeRunRequest, encodeUserMessage } from "../src/proto/agent.ts";
-import { decideExec, rankAlternatives, rankedTools, rejectReason, stripCursorMcpToolName, cursorMcpToolName, unknownExecThrowMessage } from "../src/agent/policy.ts";
+import { decideExec, rankAlternatives, rankedTools, rejectReason, stripCursorMcpToolName, cursorMcpToolName, unknownExecThrowMessage, matchToolFor, mcpContractText, isCodemodeTool } from "../src/agent/policy.ts";
 import { BlobStore } from "../src/agent/blob-store.ts";
 import { buildRootPromptMessages, splitCurrentUser, systemPromptRootMessage } from "../src/agent/root-prompt.ts";
 import { buildAgentRequest } from "../src/agent/request.ts";
@@ -346,4 +346,42 @@ test("T-AGENT: kv get result echoes id 0", () => {
     else skipUnknown(reader, wire, field);
   });
   assert.equal(id, 0);
+});
+
+const codeModeTool: IrTool = {
+  name: "codemode",
+  description: "Run JavaScript that calls bash, shell, read, write, grep tools",
+  jsonSchema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] },
+};
+
+test("T-AGENT: codemode scores 0 and never steals a native shell match", () => {
+  assert.equal(isCodemodeTool(codeModeTool), true);
+  assert.equal(matchToolFor("shellArgs", [codeModeTool]), undefined);
+  const bash: IrTool = { name: "bash", description: "shell", jsonSchema: { type: "object", properties: { command: { type: "string" } } } };
+  assert.equal(matchToolFor("shellArgs", [codeModeTool, bash])?.name, "bash");
+  assert.equal(rankedTools("shellArgs", [codeModeTool, bash])[0]?.name, "bash");
+});
+
+test("T-AGENT: only-mode reject names codemode; score-0 non-meta is last resort", () => {
+  const only = rejectReason("shellArgs", [codeModeTool], "echo hi");
+  assert.match(only, /mcp_pi_codemode/);
+  assert.match(only, /\{"code": "echo hi"\}/);
+  const echo: IrTool = { name: "echo", description: "echo", jsonSchema: { type: "object", properties: { x: { type: "string" } } } };
+  assert.match(rejectReason("shellArgs", [echo], "echo hi"), /mcp_pi_echo/);
+  const mixed = rejectReason("shellArgs", [echo, codeModeTool], "echo hi");
+  assert.match(mixed, /mcp_pi_codemode/);
+  assert.equal(/mcp_pi_echo/.test(mixed), false);
+});
+
+test("T-AGENT: mcpContractText pins codemode first even past the extras cap", () => {
+  const extras: IrTool[] = Array.from({ length: 30 }, (_, i) => ({
+    name: `extra_${i}`,
+    description: `extra ${i}`,
+    jsonSchema: { type: "object", properties: { x: { type: "string" } } },
+  }));
+  const text = mcpContractText([codeModeTool, ...extras]);
+  assert.match(text, /mcp_pi_codemode\(code\)/);
+  assert.ok(text.indexOf("mcp_pi_codemode") < text.indexOf("mcp_pi_extra_0"));
+  const listed = [...text.matchAll(/mcp_pi_extra_\d+/g)].length;
+  assert.ok(listed <= 23, "codemode occupies one of the 24 extra slots");
 });

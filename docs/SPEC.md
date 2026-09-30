@@ -24,7 +24,7 @@ Surveyed every Cursor-related pi extension on npm/GitHub/pi.dev (12+). Conclusio
 | SDK/CLI/ACP | pi-cursor-sdk, @jiah-liu, pi-cursor-acp-provider | ✗ (tools executed by Cursor-side processes) | ~✓ | active |
 | AgentService native fork | @rahularya01/pi-cursor | ✗ (native exec runs in-process) | ✓ | most active |
 | AgentService proxy | @offbynan/pi-cursor-provider | ✓ (reject-all) | ✗ (needs external patch) | unmaintained, issues closed |
-| **Pure inference** | pi-cursor-inference | ✓ (no execution surface by design) | ✓ in theory | unmaintained, not on pi 0.87 |
+| **Pure inference** | pi-cursor-inference | ✓ (no execution surface by design) | ✓ in theory | unmaintained, not on pi 0.99 |
 
 **Auditability and maintenance are anti-correlated in this community**: actively maintained
 implementations all hand execution to the Cursor side; the two audit-compliant implementations have
@@ -172,7 +172,7 @@ each produce the expected pi-side error message with no re-entry residue.
 
 ### FR-8 Compatibility statement
 
-Declare the **tested pi version matrix** (first release: `0.87.x`). All assumptions about pi message
+Declare the **tested pi version matrix** (this release: `0.99.x`). All assumptions about pi message
 shapes live in the `compat/` layer (see DESIGN); code outside that layer must not depend on pi
 internals; run `T-COMPAT` on every pi upgrade.
 
@@ -202,6 +202,6 @@ internals; run `T-COMPAT` on every pi upgrade.
 ## 6. Acceptance gate (Definition of Done for v1.0)
 
 - `T-FR1..T-FR7` all pass (real Cursor environment, including Linux).
-- `T-COMPAT` (pi 0.87.x) passes.
+- `T-COMPAT` (pi 0.99.x) passes.
 - All static audit checks pass: process whitelist, network domain whitelist, persistence inventory.
 - docs: SPEC/DESIGN/PROTOCOL/README match behavior.

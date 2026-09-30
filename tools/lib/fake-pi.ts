@@ -25,6 +25,86 @@ export function loadAccess(): string {
   throw new Error("no cursor credential");
 }
 
+export const CODEMODE_TOOL = {
+  name: "codemode",
+  description:
+    "Run JavaScript that calls bash, shell, read, write, grep, and find. Hidden builtins stay callable via tools.bash / tools.read / tools.write.",
+  jsonSchema: { type: "object", properties: { code: { type: "string" } }, required: ["code"] },
+};
+
+/** Catalog shape of `codemode.mode=only`: builtins hidden, only the script tool is declared. */
+export const ONLY_MODE_TOOLS = [CODEMODE_TOOL];
+
+function parseObjectLiteral(raw: string): Record<string, unknown> {
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    const jsonish = raw.replace(/([,{]\s*)([A-Za-z_][\w]*)\s*:/g, '$1"$2":');
+    return JSON.parse(jsonish) as Record<string, unknown>;
+  }
+}
+
+function nestedToolCalls(code: string): { name: string; args: Record<string, unknown> }[] {
+  const out: { name: string; args: Record<string, unknown> }[] = [];
+  const prefix = /tools\.(bash|read|write|grep|find)\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = prefix.exec(code))) {
+    const start = match.index + match[0].length;
+    if (code[start] !== "{") continue;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let i = start;
+    for (; i < code.length; i += 1) {
+      const c = code[i]!;
+      if (inStr) {
+        if (esc) {
+          esc = false;
+          continue;
+        }
+        if (c === "\\") {
+          esc = true;
+          continue;
+        }
+        if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') {
+        inStr = true;
+        continue;
+      }
+      if (c === "{") depth += 1;
+      else if (c === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          i += 1;
+          break;
+        }
+      }
+    }
+    out.push({ name: match[1]!, args: parseObjectLiteral(code.slice(start, i)) });
+  }
+  return out;
+}
+
+function wrapCodemodeResult(text: string, isError: boolean): { text: string; isError: boolean } {
+  const header = `${isError ? "Script failed" : "Script completed"}\nWall time 0.1 seconds\nOutput:\n`;
+  return { text: header + text, isError };
+}
+
+function executeCodemode(code: string): { text: string; isError: boolean } {
+  const calls = nestedToolCalls(code);
+  if (calls.length === 0) return wrapCodemodeResult("no nested tools.* call in script", true);
+  const parts: string[] = [];
+  let isError = false;
+  for (const call of calls) {
+    const r = fakePiExecute(call.name, call.args);
+    parts.push(r.text);
+    if (r.isError) isError = true;
+  }
+  return wrapCodemodeResult(parts.join(""), isError);
+}
+
 /** The Pi tool set the probes advertise (mirrors pi's classic tools). */
 export const TOOLS = [
   { name: "bash", description: "Run a shell command", jsonSchema: { type: "object", properties: { command: { type: "string" }, timeout: { type: "number" } }, required: ["command"] } },
@@ -62,13 +142,17 @@ export function fakePiExecute(name: string, args: Record<string, unknown>): { te
         return { text: (r.stdout ?? "") + (r.stderr ?? ""), isError: r.status === 2 };
       }
       case "find": {
+        const pattern = String(args.pattern ?? "*");
+        const name = pattern.replace(/^\*\*\//, "") || "*";
         const r = spawnSync(
           "find",
-          [String(args.path ?? "."), "-name", String(args.pattern ?? "*"), "-type", "f"],
+          [String(args.path ?? "."), "-name", name, "-type", "f"],
           { encoding: "utf8", timeout: 20_000 },
         );
         return { text: (r.stdout ?? "") + (r.stderr ?? ""), isError: r.status !== 0 };
       }
+      case "codemode":
+        return executeCodemode(String(args.code ?? ""));
       default:
         return { text: `probe has no executor for ${name}`, isError: true };
     }

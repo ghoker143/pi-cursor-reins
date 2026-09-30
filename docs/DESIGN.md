@@ -174,11 +174,11 @@ The second same-layer implementation (parallel to L4a, sharing L6's IR and L3's 
   attached are lifted through; a stale `model.input` is not used to reject them locally —
   RunInference still rejects images). IR events → pi AssistantMessage event objects.
 - **Every assumption about pi message shapes lives here**, each with a version comment
-  (`// pi 0.87: content may be a string`); on a pi upgrade this file is the only checklist, and
+  (`// pi 0.99: content may be a string`); on a pi upgrade this file is the only checklist, and
   `T-COMPAT` freezes the assumptions.
 - Tool-schema projection (pi JSON schema → the minimal shape Cursor accepts) also lives here, with
   the projection rules (and the dropped-field list) documented.
-- Tests: `T-COMPAT` (real pi 0.87.x TranscriptContext samples → IR snapshot; and the reverse).
+- Tests: `T-COMPAT` (real pi 0.99.x TranscriptContext samples → IR snapshot; and the reverse).
 
 ### L7 `src/extension/` — pi registration surface (thin)
 

@@ -2,7 +2,10 @@
 /**
  * Native exec translation is the DEFAULT behavior: a native exec is translated
  * to a regular Pi `tool_call` (capability-matched via rankedTools, never a
- * hardcoded tool name); Pi's permission system stays the execution authority.
+ * hardcoded declared-tool name); Pi's permission system stays the execution authority.
+ * When declared bash/read/write are hidden (`codemode.mode=only`), the same
+ * execs synthesize a `codemode` `{ code }` script that calls `tools.bash` / `tools.read`
+ * / … — still via Pi, never Cursor-side exec.
  * When the tool result comes back, it is encoded into the native success/error
  * wire shape (PROTOCOL-AGENT §5.1).
  *
@@ -13,7 +16,7 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { matchToolFor, schemaProperties } from "./policy.ts";
+import { isCodemodeTool, matchToolFor, schemaProperties } from "./policy.ts";
 import { expectBytes, expectString, expectVarint, forEachField, skipUnknown, WireType } from "../proto/wire.ts";
 import type { DecodedExec } from "../proto/agent.ts";
 import type { IrTool } from "../session/ir.ts";
@@ -408,12 +411,71 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+function bashCommand(command: string, cwd: string): string {
+  if (cwd === "") return command;
+  return `cd -- ${shellQuote(cwd)} && ${command}`;
+}
+
+function bashScript(command: string): string {
+  return [
+    `const r = await tools.bash({ command: ${JSON.stringify(command)} });`,
+    `text(r.output ?? "");`,
+    `if (r.exit_code) exit(1);`,
+  ].join("\n");
+}
+
+function readScript(pathArg: string): string {
+  return `text(await tools.read({ path: ${JSON.stringify(pathArg)} }));`;
+}
+
+function writeScript(pathArg: string, contents: string): string {
+  return `await tools.write({ path: ${JSON.stringify(pathArg)}, content: ${JSON.stringify(contents)} });`;
+}
+
+function grepScript(args: Extract<NativeArgs, { case: "grepArgs" }>): string {
+  const call: Record<string, unknown> = { pattern: args.pattern };
+  if (args.path !== "") call.path = args.path;
+  if (args.glob !== "") call.glob = args.glob;
+  if (args.caseInsensitive) call.ignoreCase = true;
+  return `text(await tools.grep(${JSON.stringify(call)}));`;
+}
+
+function findScript(glob: string, pathArg: string): string {
+  const call: Record<string, unknown> = { pattern: glob };
+  if (pathArg !== "") call.path = pathArg;
+  return `text(await tools.find(${JSON.stringify(call)}));`;
+}
+
+function deleteScript(pathArg: string): string {
+  const q = shellQuote(pathArg);
+  return bashScript(`sz=$(wc -c < ${q}) && rm -- ${q} && printf 'D0:%s\\n' "$sz"`);
+}
+
+function codemodeScriptFor(args: NativeArgs): string {
+  switch (args.case) {
+    case "shellArgs":
+    case "shellStreamArgs":
+      return bashScript(bashCommand(args.command, args.workingDirectory));
+    case "readArgs":
+      return readScript(args.path);
+    case "writeArgs":
+      return writeScript(args.path, args.contents);
+    case "deleteArgs":
+      return deleteScript(args.path);
+    case "grepArgs":
+      if (args.pattern === "" && args.glob !== "") return findScript(args.glob, args.path);
+      return grepScript(args);
+  }
+}
+
 /**
  * Pick the Pi tool that can serve this native exec (capability match, never a
  * hardcoded name) and adapt the arguments to that tool's own JSON schema.
+ * When nothing declared matches and a `codemode` tool is registered (pi 0.99
+ * `codemode.mode=only` hides bash/read/write), synthesize a `{ code }` script.
  * Null = no capable tool registered → the caller falls back to the reject path.
  */
-export function translateNativeToPi(
+function translateDeclared(
   args: NativeArgs,
   tools: IrTool[],
 ): { tool: IrTool; args: Record<string, unknown> } | null {
@@ -424,10 +486,17 @@ export function translateNativeToPi(
       if (!tool) return null;
       const keys = schemaProperties(tool);
       const out: Record<string, unknown> = {};
-      if (!putIf(out, keys, ["command", "cmd", "script", "shell"], args.command)) return null;
+      // pi 0.99 bash has no cwd — wrap as `cd -- ${quoted} && ${command}` when the
+      // matched tool does not declare a cwd-like key.
+      const hasCwd = keys.some((k) =>
+        ["cwd", "workingdirectory", "working_directory", "workdir"].includes(k.toLowerCase()),
+      );
+      const command =
+        args.workingDirectory !== "" && !hasCwd ? bashCommand(args.command, args.workingDirectory) : args.command;
+      if (!putIf(out, keys, ["command", "cmd", "script", "shell"], command)) return null;
       // args.timeoutMs is deliberately NOT translated: the wire field's unit is
       // unverified (PROTOCOL-AGENT §5.1), a wrong unit is worse than Pi's default.
-      if (args.workingDirectory !== "") {
+      if (args.workingDirectory !== "" && hasCwd) {
         putIf(out, keys, ["cwd", "workingDirectory", "working_directory", "workdir"], args.workingDirectory);
       }
       return { tool, args: out };
@@ -493,6 +562,17 @@ export function translateNativeToPi(
   }
 }
 
+export function translateNativeToPi(
+  args: NativeArgs,
+  tools: IrTool[],
+): { tool: IrTool; args: Record<string, unknown> } | null {
+  const declared = translateDeclared(args, tools);
+  if (declared) return declared;
+  const cm = tools.find(isCodemodeTool);
+  if (!cm) return null;
+  return { tool: cm, args: { code: codemodeScriptFor(args) } };
+}
+
 /** Best-effort parse of grep-style "file:line:content" tool output. */
 function parseGrepContent(text: string): { file: string; lineNumber: number; content: string }[] {
   const out: { file: string; lineNumber: number; content: string }[] = [];
@@ -503,12 +583,24 @@ function parseGrepContent(text: string): { file: string; lineNumber: number; con
   return out;
 }
 
+/** Strip the pi 0.99 `codemode` result header so native encoding sees the script body. */
+const CODEMODE_RESULT_HEADER = /^Script (completed|failed)\nWall time [\d.]+ seconds\nOutput:\n/;
+
+export function unwrapCodemodeResult(text: string, isError: boolean): { text: string; isError: boolean } {
+  const match = CODEMODE_RESULT_HEADER.exec(text);
+  if (!match) return { text, isError };
+  return { text: text.slice(match[0].length), isError: isError || match[1] === "failed" };
+}
+
 /**
  * Encode a Pi tool result into the native exec success/error wire shape.
  * Failure is reported on the native error arm so the model sees a real tool
  * outcome, not a provider refusal.
  */
 export function encodeNativeResultFromPi(args: NativeArgs, text: string, isError: boolean): NativeReply {
+  const unwrapped = unwrapCodemodeResult(text, isError);
+  text = unwrapped.text;
+  isError = unwrapped.isError;
   switch (args.case) {
     case "shellArgs":
       return {

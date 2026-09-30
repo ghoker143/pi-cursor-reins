@@ -2,6 +2,7 @@
 import {
   calculateCost,
   createAssistantMessageEventStream,
+  isModelType,
   type AssistantMessageEventStream,
   type Model,
   type OAuthCredentials,
@@ -40,6 +41,7 @@ import { debugEnabled, debugLog } from "../transport/debug.ts";
 
 function asConfig(rows: ProviderModelRow[]): ProviderModelConfig[] {
   return rows.map((m) => ({
+    type: "chat",
     id: m.id,
     name: m.name,
     api: m.api,
@@ -49,7 +51,7 @@ function asConfig(rows: ProviderModelRow[]): ProviderModelConfig[] {
     contextWindow: m.contextWindow,
     maxTokens: m.maxTokens,
     samplingParams: m.samplingParams,
-    thinkingLevelMap: m.thinkingLevelMap as ProviderModelConfig["thinkingLevelMap"],
+    thinkingLevelMap: m.thinkingLevelMap,
   }));
 }
 
@@ -149,6 +151,7 @@ export function streamSimple(
 function persistCatalog(rows: ProviderModelRow[]) {
   return {
     models: rows.map((m) => ({
+      type: "chat" as const,
       ...m,
       provider: PROVIDER_ID,
       api: PROVIDER_API,
@@ -171,6 +174,7 @@ async function restoreStoredCatalog(
 async function refreshModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
   const stored = context.stored?.models
     ?.filter((m) => m.provider === PROVIDER_ID || m.api === PROVIDER_API)
+    .filter((m) => isModelType(m, "chat"))
     .map(
       (m): ProviderModelRow => ({
         id: m.id,

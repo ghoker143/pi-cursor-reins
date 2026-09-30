@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/).
 
+## 0.3.0 — 2026-09-30
+
+- **pi 0.99 only.** Peer range is `@earendil-works/pi-ai` / `pi-coding-agent` `>=0.99.0 <0.100.0`.
+  Catalog rows are emitted as `type: "chat"` `ProviderModelConfig`s and restored with
+  `isModelType(..., "chat")`.
+- **Codemode fallback for native exec.** Default (`codemode.mode=on`) still translates native
+  Shell/Read/Write/Grep/Delete to declared Pi tools. When those tools are hidden
+  (`codemode.mode=only`), the same execs synthesize a `codemode` `{ code }` script
+  (`tools.bash` / `tools.read` / `tools.write` / `tools.grep` / `tools.find`; delete still via
+  `wc -c` + `rm`). `codemode` and `tool_search` score 0 in capability matching so their
+  descriptions cannot steal a native match. Results unwrap the
+  `"Script completed|failed\nWall time …\nOutput:\n"` header; a failed script sets `isError`.
+- **cwd on 0.99 bash.** The bash schema has no `cwd`; translation wraps
+  `cd -- ${quoted} && ${command}` when the matched tool has no cwd-like key.
+- **MCP contract pins `codemode`.** `mcpContractText` always lists `mcp_pi_codemode(code)` first
+  among extras so the 24-line cap cannot drop it.
+
 ## 0.2.1 — 2026-09-30
 
 - **Fixed: tools registered mid-run were uncallable for the rest of the Run.** The exec
