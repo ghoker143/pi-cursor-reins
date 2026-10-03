@@ -113,6 +113,9 @@ export function transcriptToIr(
     | Record<string, { id: string; value: string }[]>
     | undefined;
   const maxMode = options?.samplingParams?.cursorMaxMode ?? model.samplingParams?.cursorMaxMode;
+  // AgentService rejects the "context" parameter outright (not_found for
+  // every value/family, measured 2026-10-03); agent/request.ts drops it.
+  // Only the inference channel consumes it (session/request.ts).
   const contextParam = options?.samplingParams?.cursorContext ?? model.samplingParams?.cursorContext;
   // requested_model.model_id must be an id Cursor actually publishes: the family
   // id on the pi row is CONSTRUCTED (familyFor groups effort slugs) and

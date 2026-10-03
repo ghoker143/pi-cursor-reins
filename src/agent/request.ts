@@ -74,7 +74,12 @@ export function buildAgentRequest(
   const bytes = encodeRunRequest({
     conversationState,
     userMessage: encodeUserMessage({ text: userText, messageId, selectedContextBlob: selected, images }),
-    requestedModel: encodeRequestedModel(ir.modelId, ir.maxMode, ir.contextParam, ir.effortParams),
+    // requested_model.parameters id "context" is rejected by AgentService as
+    // not_found for every value (128k/256k/1m) and family (grok, claude) —
+    // measured 2026-10-03; the slug alone passes and already encodes the
+    // variant's context. The IR keeps contextParam for the inference channel,
+    // which selects variants by parameter (session/request.ts).
+    requestedModel: encodeRequestedModel(ir.modelId, ir.maxMode, undefined, ir.effortParams),
     mcpTools: omitOnResume ? encodeMcpTools([]) : encodeMcpTools(tools),
     conversationId,
   });

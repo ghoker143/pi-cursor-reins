@@ -172,7 +172,7 @@ each produce the expected pi-side error message with no re-entry residue.
 
 ### FR-8 Compatibility statement
 
-Declare the **tested pi version matrix** (this release: `0.99.x`). All assumptions about pi message
+Declare the **tested pi version matrix** (this release: `0.99.x`, `1.0.0`). All assumptions about pi message
 shapes live in the `compat/` layer (see DESIGN); code outside that layer must not depend on pi
 internals; run `T-COMPAT` on every pi upgrade.
 

@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning is
 [SemVer](https://semver.org/).
 
+## 0.3.1 — 2026-10-03
+
+- **Peer range widened to `>=0.99.0 <1.2.0`** (pi `1.0.0` live-tested end-to-end:
+  `pi -p --no-extensions -e … --model cursor/grok-4.7`).
+
+- **Fixed: every Run on context-carrying models failed `not_found`.** Cursor's AgentService
+  now rejects `requested_model.parameters` id `context` outright (`not_found` for every
+  value — `128k`/`256k`/`1m` — and family: grok, claude; measured 2026-10-03). The slug
+  already encodes the variant's context, so the agent channel no longer sends the parameter.
+  Visible as `Cursor /agent.v1.AgentService/Run failed: not_found — Error` on `grok-4.7`,
+  `claude-sonnet-5-thinking`, and any other row whose catalog entry carries a default
+  `context` variant (`composer-2.5`, `gpt-5.3-codex` were unaffected). The inference channel
+  still selects variants by parameter and is unchanged. New probe: `tools/probe-context.ts`.
+
 ## 0.3.0 — 2026-09-30
 
 - **pi 0.99 only.** Peer range is `@earendil-works/pi-ai` / `pi-coding-agent` `>=0.99.0 <0.100.0`.

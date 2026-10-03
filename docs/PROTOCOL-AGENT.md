@@ -71,7 +71,7 @@ Do **not** set `custom_system_prompt` (field 8). Do **not** send `model_details`
 
 | id | source |
 |---|---|
-| `context` | the default variant's `parameterValues` (`256k` / `1m` / …) — already wired |
+| `context` | **rejected** — `not_found` for every value (`128k`/`256k`/`1m`) and family (grok, claude), measured 2026-10-03; the slug already encodes the variant's context. Never send on Run |
 | the family's effort knob: `reasoning_effort` (grok), `reasoning` (gpt-5.x), `effort` + `thinking` (Claude) | the variant of the thinking level Pi selected |
 
 **Effort is encoded in the published slug, and the slug is what you send.** Cursor publishes an effort variant both as a usable slug (`grok-4.7-high`, kept in `thinkingLevelMap`) and as `AvailableModelVariant.legacySlug` + `parameterValues`. Remeasured 2026-09-29 across grok/gpt/claude: the published slug alone is accepted as `requested_model.model_id` for every family, while the CONSTRUCTED family id (`familyFor` groups slugs into e.g. bare `cursor-grok-4.6` or `grok-4.7-fast`) is rejected for many families (`not_found`), and slug + variant parameters together are also rejected (the slug already encodes the variant). The provider therefore sends the level's published slug and no effort parameters; for requests without a thinking level it sends the backend-marked default variant's slug (`samplingParams.cursorDefaultModelId`, from `variants[].isDefaultNonMaxConfig`). Row ids are display-only and normalize away the `cursor-` prefix some families carry (unless it collides with an unprefixed sibling).

@@ -217,12 +217,14 @@ function requestedModelParams(body: Uint8Array): { id: string; value: string }[]
   return out;
 }
 
-test("T-AGENT: thinking effort rides requested_model.parameters, not the model id", () => {
+test("T-AGENT: thinking effort rides requested_model.parameters; context never does", () => {
   const req = buildAgentRequest(
     ir({ contextParam: "256k", effortParams: [{ id: "reasoning_effort", value: "high" }] }),
   );
+  // AgentService rejects the "context" parameter as not_found (measured
+  // 2026-10-03); the slug already encodes the variant's context. contextParam
+  // stays IR-level for the inference channel only.
   assert.deepEqual(requestedModelParams(req.bytes), [
-    { id: "context", value: "256k" },
     { id: "reasoning_effort", value: "high" },
   ]);
   assert.deepEqual(requestedModelParams(buildAgentRequest(ir()).bytes), [], "no context and no level sends no parameters");

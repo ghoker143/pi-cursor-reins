@@ -1,6 +1,6 @@
 {
   "name": "pi-cursor-reins",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Cursor provider for pi: fully Pi-owned tool execution (no Cursor-side exec, audited) using your Cursor subscription quota. AgentService channel by default, optional RunInference.",
   "type": "module",
   "license": "AGPL-3.0-or-later",
@@ -48,8 +48,8 @@
     "audit": "node --experimental-strip-types tools/audit/audit.ts"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.99.0 <0.100.0",
-    "@earendil-works/pi-coding-agent": ">=0.99.0 <0.100.0"
+    "@earendil-works/pi-ai": ">=0.99.0 <1.2.0",
+    "@earendil-works/pi-coding-agent": ">=0.99.0 <1.2.0"
   },
   "dependencies": {
     "@bufbuild/protobuf": "2.14.1"

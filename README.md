@@ -67,7 +67,7 @@ Headless: `pi -p --model cursor/<id> "…"`. Try `cursor/composer-2.5`, `cursor/
 
 ## Compatibility
 
-Tested host: **pi 0.99.x** (peer range is deliberately narrow; widen only after live testing).
+Tested host: **pi 0.99.x and 1.0.0** (peer range `>=0.99.0 <1.2.0`; deliberately narrow — widen only after live testing).
 Node ≥ 22. No build step: pi loads `src/index.ts` via jiti.
 
 This is an independent, unofficial implementation. It is not affiliated with Cursor, and Cursor may
